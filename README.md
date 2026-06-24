@@ -195,7 +195,7 @@ GridMind/
 
 ---
 
-## 🚀 Installation
+## Installation
 
 Clone the repository:
 
