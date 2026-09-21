@@ -19,6 +19,8 @@ def run_episode(
     task_name: str = "key_door",
     max_steps: int | None = None,
     model: str | None = None,
+    partial: bool = False,
+    view_radius: int = 2,
     log_dir: str = "logs",
 ) -> dict:
     load_dotenv()
@@ -29,20 +31,22 @@ def run_episode(
     if max_steps is not None:
         task["max_steps"] = max_steps
 
-    env = GridWorld()
+    env = GridWorld(partial_observability=partial, view_radius=view_radius)
     agent = LLMAgent(model=model)
 
     observation = env.reset(task)
     history = []
 
     print(f"\n=== GridMind | task={task['name']} | model={agent.model} ===")
+    if partial:
+        print(f"Partial observability ON (radius={view_radius})")
     print(f"Goal: {task['goal']}\n")
 
     for step in range(task["max_steps"]):
         print(f"\n=== STEP {step} ===")
-        env.render()
+        env.render(use_color=True)
 
-        action, explanation = agent.choose_action(
+        action, explanation, note = agent.choose_action(
             observation=observation,
             actions=env.action_space,
             history=history,
@@ -51,13 +55,16 @@ def run_episode(
         print(f"Action     : {action}")
         if explanation:
             print(f"Reasoning  : {explanation}")
+        if note:
+            print(f"Note       : {note}")
 
-        new_obs, reward, done, info = env.step(action)
+        new_obs, reward, done, info = env.step(action, note_text=note)
 
         record = {
             "step": step,
             "action": action,
             "explanation": explanation,
+            "note": note,
             "reward": reward,
             "done": done,
             "info": info,
@@ -68,7 +75,7 @@ def run_episode(
 
         if done:
             print("\n--- Episode finished ---")
-            env.render()
+            env.render(use_color=True)
             print(f"Result: {info}")
             break
 
@@ -85,6 +92,8 @@ def run_episode(
             f.write(f"STEP {s['step']}\n")
             f.write(f"Action: {s['action']}\n")
             f.write(f"Explanation: {s['explanation']}\n")
+            if s.get("note"):
+                f.write(f"Note: {s['note']}\n")
             f.write(f"Reward: {s['reward']}\n")
             f.write(f"Info: {s['info']}\n\n")
 
@@ -104,6 +113,17 @@ def main() -> None:
     )
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--model", default=None, help="OpenAI model name")
+    parser.add_argument(
+        "--partial",
+        action="store_true",
+        help="Enable partial observability (fog-of-war)",
+    )
+    parser.add_argument(
+        "--view-radius",
+        type=int,
+        default=2,
+        help="Vision radius when --partial is set (Manhattan distance)",
+    )
     parser.add_argument("--list-tasks", action="store_true")
     args = parser.parse_args()
 
@@ -118,6 +138,8 @@ def main() -> None:
         task_name=args.task,
         max_steps=args.max_steps,
         model=args.model,
+        partial=args.partial,
+        view_radius=args.view_radius,
     )
 
 

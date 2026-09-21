@@ -2,7 +2,7 @@
 
 > A lightweight 2D grid world for LLM-driven agents.
 
-GridMind places a Large Language Model inside a fully observable grid environment. The agent receives structured JSON observations, reasons about the state, and returns a single valid action each step until it completes the goal or hits the step limit.
+GridMind places a Large Language Model inside a grid environment. The agent receives structured JSON observations, can keep short notes (memory), optionally sees only a limited radius (fog-of-war), and must return a single valid action each step until it completes the goal or hits the step limit.
 
 Built by **Umar Muhammad**.
 
@@ -10,13 +10,14 @@ Built by **Umar Muhammad**.
 
 ## Features
 
-- Fully observable 2D grid world
+- Fully observable **or** partial observability (fog-of-war)
+- Agent **memory** via `WRITE_NOTE` (persistent short notes)
 - Multiple built-in tasks / maps
 - Structured JSON observations + strict action schema
-- LLM agent with robust JSON parsing (handles markdown fences)
-- Step-by-step decision logging (JSON + text)
+- Robust LLM JSON parsing (handles markdown fences)
+- Colored terminal renderer
 - CLI interface
-- Unit tests for the environment
+- Unit tests
 
 ---
 
@@ -46,10 +47,10 @@ List available tasks:
 python main.py --list-tasks
 ```
 
-Run a specific task with a different model:
+Run with fog-of-war (partial observability):
 
 ```bash
-python main.py --task maze --model gpt-4o-mini --max-steps 50
+python main.py --task maze --partial --view-radius 2
 ```
 
 ---
@@ -70,17 +71,27 @@ python main.py --task maze --model gpt-4o-mini --max-steps 50
 MOVE_UP | MOVE_DOWN | MOVE_LEFT | MOVE_RIGHT
 PICK_UP_KEY
 OPEN_DOOR
+WRITE_NOTE          # save a short memory note
 DESCRIBE
 ```
 
-The agent must always reply with:
+Example agent reply:
 
 ```json
 {
-  "action": "MOVE_RIGHT",
-  "explanation": "Moving toward the key."
+  "action": "WRITE_NOTE",
+  "explanation": "I should remember where the key is.",
+  "note": "Key seen at (4,1)"
 }
 ```
+
+---
+
+## Partial Observability
+
+When `--partial` is enabled, the agent only sees cells within a Manhattan distance of `--view-radius` (default 2). Everything else appears as `?`.
+
+This makes the task significantly harder and encourages the use of `WRITE_NOTE`.
 
 ---
 
@@ -88,7 +99,7 @@ The agent must always reply with:
 
 ```text
 GridMind/
-├── main.py                 # CLI entry point
+├── main.py
 ├── requirements.txt
 ├── config.example.json
 ├── .env.example
@@ -101,7 +112,6 @@ GridMind/
 ├── tests/
 │   └── test_grid_world.py
 ├── examples/
-│   └── sample_run.md
 └── logs/                   # created at runtime
 ```
 
@@ -116,24 +126,13 @@ pytest tests/ -v
 
 ---
 
-## How It Works
-
-1. Environment builds a structured observation (grid, position, inventory, goal…).
-2. Observation + recent history are sent to the LLM.
-3. LLM returns a single JSON action.
-4. Environment executes the action and returns the next observation + reward.
-5. Loop continues until success or max steps.
-
----
-
 ## Future Improvements
 
-- [ ] Partial observability (fog of war)
-- [ ] Persistent memory / notes for the agent
 - [ ] Pygame or web visualizer
 - [ ] Procedural / multi-room maps
-- [ ] Support for additional LLM providers
+- [ ] Support for additional LLM providers (Anthropic, Groq, local)
 - [ ] Multi-agent scenarios
+- [ ] Stronger memory (vector notes / summaries)
 
 ---
 
