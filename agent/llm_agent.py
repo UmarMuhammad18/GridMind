@@ -1,11 +1,9 @@
 import json
-import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
-
 from agent.prompt_templates import SYSTEM_PROMPT, build_user_prompt
+from agent.providers import BaseProvider, get_provider
 
 
 class LLMAgent:
@@ -14,16 +12,13 @@ class LLMAgent:
     a valid action + short explanation (+ optional note).
     """
 
-    def __init__(self, model: str | None = None) -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is not set. "
-                "Copy .env.example to .env and add your key, or export it."
-            )
-
-        self.client = OpenAI(api_key=api_key)
-        self.model = model or os.getenv("GRIDMIND_MODEL", "gpt-4o-mini")
+    def __init__(
+        self,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.provider: BaseProvider = get_provider(provider, model)
+        self.model = self.provider.model
 
     def choose_action(
         self,
@@ -37,8 +32,7 @@ class LLMAgent:
         """
         user_prompt = build_user_prompt(observation, actions, history)
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        content = self.provider.chat(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -47,7 +41,6 @@ class LLMAgent:
             max_tokens=350,
         )
 
-        content = response.choices[0].message.content or ""
         action, explanation, note = self._parse_response(content, actions)
         return action, explanation, note
 

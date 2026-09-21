@@ -6,6 +6,7 @@ GridMind — run an LLM agent inside a 2D grid world.
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -18,9 +19,11 @@ from world.tasks import get_task, list_tasks
 def run_episode(
     task_name: str = "key_door",
     max_steps: int | None = None,
+    provider: str | None = None,
     model: str | None = None,
     partial: bool = False,
     view_radius: int = 2,
+    visual: bool = False,
     log_dir: str = "logs",
 ) -> dict:
     load_dotenv()
@@ -32,12 +35,21 @@ def run_episode(
         task["max_steps"] = max_steps
 
     env = GridWorld(partial_observability=partial, view_radius=view_radius)
-    agent = LLMAgent(model=model)
+    agent = LLMAgent(provider=provider, model=model)
+
+    viz = None
+    if visual:
+        try:
+            from world.visualizer import Visualizer
+            viz = Visualizer(title=f"GridMind — {task['name']}")
+        except Exception as e:
+            print(f"[warn] Could not start visualizer: {e}")
+            print("        Falling back to terminal only.")
 
     observation = env.reset(task)
     history = []
 
-    print(f"\n=== GridMind | task={task['name']} | model={agent.model} ===")
+    print(f"\n=== GridMind | task={task['name']} | provider={agent.provider.__class__.__name__} | model={agent.model} ===")
     if partial:
         print(f"Partial observability ON (radius={view_radius})")
     print(f"Goal: {task['goal']}\n")
@@ -45,6 +57,21 @@ def run_episode(
     for step in range(task["max_steps"]):
         print(f"\n=== STEP {step} ===")
         env.render(use_color=True)
+
+        if viz:
+            grid_for_viz = env._visible_grid() if env.partial_observability else [row[:] for row in env.grid]
+            alive = viz.draw(
+                grid=grid_for_viz,
+                agent_pos=env.agent_pos,
+                inventory=env.inventory,
+                door_open=env.door_open,
+                notes=env.notes,
+                step=env.step_count,
+                max_steps=env.max_steps,
+            )
+            if not alive:
+                print("Visualizer window closed.")
+                break
 
         action, explanation, note = agent.choose_action(
             observation=observation,
@@ -76,8 +103,24 @@ def run_episode(
         if done:
             print("\n--- Episode finished ---")
             env.render(use_color=True)
+            if viz:
+                grid_for_viz = env._visible_grid() if env.partial_observability else [row[:] for row in env.grid]
+                viz.draw(
+                    grid=grid_for_viz,
+                    agent_pos=env.agent_pos,
+                    inventory=env.inventory,
+                    door_open=env.door_open,
+                    notes=env.notes,
+                    step=env.step_count,
+                    max_steps=env.max_steps,
+                    status=str(info.get("message", "")),
+                )
+                time.sleep(1.5)
             print(f"Result: {info}")
             break
+
+    if viz:
+        viz.close()
 
     # Persist logs
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -105,25 +148,13 @@ def run_episode(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="GridMind LLM Agent")
-    parser.add_argument(
-        "--task",
-        default="key_door",
-        choices=list_tasks(),
-        help="Which task / map to run",
-    )
+    parser.add_argument("--task", default="key_door", choices=list_tasks())
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--model", default=None, help="OpenAI model name")
-    parser.add_argument(
-        "--partial",
-        action="store_true",
-        help="Enable partial observability (fog-of-war)",
-    )
-    parser.add_argument(
-        "--view-radius",
-        type=int,
-        default=2,
-        help="Vision radius when --partial is set (Manhattan distance)",
-    )
+    parser.add_argument("--provider", choices=["openai", "groq"], default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--partial", action="store_true", help="Enable fog-of-war")
+    parser.add_argument("--view-radius", type=int, default=2)
+    parser.add_argument("--visual", action="store_true", help="Open Pygame window")
     parser.add_argument("--list-tasks", action="store_true")
     args = parser.parse_args()
 
@@ -137,9 +168,11 @@ def main() -> None:
     run_episode(
         task_name=args.task,
         max_steps=args.max_steps,
+        provider=args.provider,
         model=args.model,
         partial=args.partial,
         view_radius=args.view_radius,
+        visual=args.visual,
     )
 
 
