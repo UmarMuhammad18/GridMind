@@ -2,7 +2,9 @@
 
 > A lightweight 2D grid world for LLM-driven agents.
 
-GridMind places a Large Language Model inside a grid environment. The agent receives structured JSON observations, can keep short notes (memory), optionally sees only a limited radius (fog-of-war), and must return a single valid action each step until it completes the goal or hits the step limit.
+GridMind places a Large Language Model inside a grid environment. The agent receives structured observations, can keep short notes (memory), optionally sees only a limited radius (fog-of-war), and must return a single valid action each step until it completes the goal or hits the step limit.
+
+**Supports OpenAI and Groq.** Optional live Pygame visualizer.
 
 Built by **Umar Muhammad**.
 
@@ -10,14 +12,17 @@ Built by **Umar Muhammad**.
 
 ## Features
 
-- Fully observable **or** partial observability (fog-of-war)
-- Agent **memory** via `WRITE_NOTE` (persistent short notes)
-- Multiple built-in tasks / maps
-- Structured JSON observations + strict action schema
-- Robust LLM JSON parsing (handles markdown fences)
-- Colored terminal renderer
-- CLI interface
-- Unit tests
+| Feature                    | Description                                      |
+|---------------------------|--------------------------------------------------|
+| Multiple tasks / maps     | `key_door`, `maze`, `long_key`                   |
+| Agent memory              | `WRITE_NOTE` – persistent short notes            |
+| Partial observability     | Fog-of-war with configurable view radius         |
+| Multi-provider LLMs       | OpenAI + Groq (easy to extend)                   |
+| Live visualizer           | Optional Pygame window (`--visual`)              |
+| Colored terminal output   | Clear, readable ASCII rendering                  |
+| Strict action schema      | Reliable JSON interface for the LLM              |
+| Logging                   | Full JSON + text episode logs                    |
+| Tests                     | Unit tests for the environment                   |
 
 ---
 
@@ -32,7 +37,9 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
+# Add at least one key:
+#   OPENAI_API_KEY=...
+#   or GROQ_API_KEY=...
 ```
 
 Run the default task:
@@ -41,16 +48,28 @@ Run the default task:
 python main.py
 ```
 
-List available tasks:
+---
+
+## Usage Examples
 
 ```bash
+# List tasks
 python main.py --list-tasks
-```
 
-Run with fog-of-war (partial observability):
+# Specific task + model
+python main.py --task maze --provider openai --model gpt-4o-mini
 
-```bash
+# Fast inference with Groq
+python main.py --task key_door --provider groq
+
+# Fog-of-war (partial observability)
 python main.py --task maze --partial --view-radius 2
+
+# Live Pygame visualizer
+python main.py --task maze --visual
+
+# Combine everything
+python main.py --task long_key --partial --visual --provider groq
 ```
 
 ---
@@ -59,7 +78,7 @@ python main.py --task maze --partial --view-radius 2
 
 | Name       | Description                                      |
 |------------|--------------------------------------------------|
-| `key_door` | Classic: find key → open door → reach goal      |
+| `key_door` | Classic: find key → open door → reach goal       |
 | `maze`     | Larger maze layout                               |
 | `long_key` | Key is far away; requires longer planning        |
 
@@ -87,33 +106,35 @@ Example agent reply:
 
 ---
 
-## Partial Observability
-
-When `--partial` is enabled, the agent only sees cells within a Manhattan distance of `--view-radius` (default 2). Everything else appears as `?`.
-
-This makes the task significantly harder and encourages the use of `WRITE_NOTE`.
-
----
-
-## Project Structure
+## Architecture
 
 ```text
 GridMind/
-├── main.py
-├── requirements.txt
-├── config.example.json
-├── .env.example
+├── main.py                 # CLI entry point
 ├── agent/
-│   ├── llm_agent.py
+│   ├── llm_agent.py        # High-level agent loop
+│   ├── providers.py        # OpenAI / Groq abstraction
 │   └── prompt_templates.py
 ├── world/
-│   ├── grid_world.py
-│   └── tasks.py
+│   ├── grid_world.py       # Environment + fog-of-war + memory
+│   ├── tasks.py            # Task definitions
+│   └── visualizer.py       # Optional Pygame renderer
 ├── tests/
-│   └── test_grid_world.py
-├── examples/
-└── logs/                   # created at runtime
+└── logs/                   # Episode logs (auto-created)
 ```
+
+The environment and the agent are cleanly separated. You can swap the LLM provider or add new tasks without touching the core loop.
+
+---
+
+## Configuration
+
+| Variable            | Description                          | Default              |
+|---------------------|--------------------------------------|----------------------|
+| `OPENAI_API_KEY`    | OpenAI API key                       | —                    |
+| `GROQ_API_KEY`      | Groq API key                         | —                    |
+| `GRIDMIND_PROVIDER` | `openai` or `groq`                   | auto-detect          |
+| `GRIDMIND_MODEL`    | Model name override                  | provider default     |
 
 ---
 
@@ -126,13 +147,17 @@ pytest tests/ -v
 
 ---
 
-## Future Improvements
+## Roadmap
 
-- [ ] Pygame or web visualizer
+- [x] Multiple tasks
+- [x] Agent memory (`WRITE_NOTE`)
+- [x] Partial observability
+- [x] Multi-provider support (OpenAI + Groq)
+- [x] Pygame visualizer
 - [ ] Procedural / multi-room maps
-- [ ] Support for additional LLM providers (Anthropic, Groq, local)
+- [ ] Anthropic + local model support
 - [ ] Multi-agent scenarios
-- [ ] Stronger memory (vector notes / summaries)
+- [ ] Web-based visualizer
 
 ---
 
