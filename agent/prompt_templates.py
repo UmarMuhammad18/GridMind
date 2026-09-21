@@ -3,23 +3,25 @@ from typing import Any, Dict, List
 
 
 SYSTEM_PROMPT = """
-You are an agent acting inside a 2D grid world environment.
+You are an autonomous agent inside a 2D grid world.
 
-You must achieve the given goal by choosing exactly ONE action per step
-from the allowed action space.
+Your job is to achieve the given goal by choosing exactly ONE action per step
+from the allowed action list.
 
-You MUST respond with a single JSON object of the form:
+You MUST reply with a single valid JSON object and nothing else:
 
 {
   "action": "<ONE_OF_THE_ALLOWED_ACTIONS>",
-  "explanation": "<short reasoning in one or two sentences>"
+  "explanation": "<short reasoning in 1-2 sentences>"
 }
 
 Rules:
-- Only choose actions from the provided list.
-- Do not invent new actions.
-- Do not include any extra keys in the JSON.
-- The JSON must be valid and parseable.
+- Only use actions from the provided list.
+- Never invent new actions.
+- Prefer efficient paths toward the goal.
+- If you see a key ('K'), pick it up when standing on it.
+- You must open the door ('D') with OPEN_DOOR while standing next to it (and holding the key) before you can walk through.
+- Reach the goal tile ('G') to finish.
 """.strip()
 
 
@@ -28,36 +30,29 @@ def build_user_prompt(
     actions: List[str],
     history: List[Dict[str, Any]],
 ) -> str:
-    """
-    Build the user prompt given the current observation, action space, and history.
-    History is summarized to keep the prompt compact.
-    """
-    # Summarize last few steps
-    last_steps = history[-5:]
-    history_summary = []
-    for step in last_steps:
-        history_summary.append(
-            {
-                "step": step["step"],
-                "action": step["action"],
-                "reward": step["reward"],
-                "done": step["done"],
-                "info": step["info"],
-            }
-        )
+    # Keep only the last few steps to control token usage
+    last_steps = history[-6:]
+    history_summary = [
+        {
+            "step": s["step"],
+            "action": s["action"],
+            "reward": s["reward"],
+            "info": s.get("info", {}),
+        }
+        for s in last_steps
+    ]
 
     prompt = f"""
-Observation (JSON):
+Current observation:
 {json.dumps(observation, indent=2)}
 
-Available actions:
+Allowed actions:
 {json.dumps(actions)}
 
 Recent history (last {len(history_summary)} steps):
 {json.dumps(history_summary, indent=2)}
 
-Goal:
-{observation.get("goal")}
+Choose the single best next action and explain briefly.
 """.strip()
 
     return prompt

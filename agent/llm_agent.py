@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
@@ -9,23 +10,20 @@ from agent.prompt_templates import SYSTEM_PROMPT, build_user_prompt
 
 class LLMAgent:
     """
-    Simple LLM-based agent that:
-    - Receives an observation and action space
-    - Builds a prompt
-    - Calls an LLM
-    - Parses a JSON response with { "action": ..., "explanation": ... }
+    LLM-powered agent that receives structured observations and returns
+    a valid action + short explanation.
     """
 
     def __init__(self, model: str | None = None) -> None:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY environment variable is not set. "
-                "Set it before running the agent."
+                "OPENAI_API_KEY is not set. "
+                "Copy .env.example to .env and add your key, or export it."
             )
 
         self.client = OpenAI(api_key=api_key)
-        self.model = model or "gpt-4o-mini"
+        self.model = model or os.getenv("GRIDMIND_MODEL", "gpt-4o-mini")
 
     def choose_action(
         self,
@@ -41,10 +39,11 @@ class LLMAgent:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.2,
+            temperature=0.15,
+            max_tokens=300,
         )
 
-        content = response.choices[0].message.content
+        content = response.choices[0].message.content or ""
         action, explanation = self._parse_response(content, actions)
         return action, explanation
 
@@ -52,32 +51,37 @@ class LLMAgent:
         self, content: str, actions: List[str]
     ) -> Tuple[str, str]:
         """
-        Try to parse the model's response as JSON and extract the action.
-        If parsing fails or the action is invalid, fall back to a safe default.
+        Extract JSON even if the model wraps it in markdown fences.
+        Falls back safely when parsing fails.
         """
+        cleaned = content.strip()
+
+        # Remove ```json ... ``` or ``` ... ```
+        fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned)
+        if fence:
+            cleaned = fence.group(1).strip()
+
         try:
-            data = json.loads(content)
-            action = data.get("action", "").strip()
-            explanation = data.get("explanation", "").strip()
+            data = json.loads(cleaned)
+            action = str(data.get("action", "")).strip()
+            explanation = str(data.get("explanation", "")).strip()
         except Exception:
-            # Fallback: try to extract an action name by scanning
             action = self._fallback_extract_action(content, actions)
-            explanation = "Fallback parsing: could not parse JSON response."
+            explanation = "Could not parse JSON — used fallback extraction."
 
         if action not in actions:
-            # If invalid, choose a safe default
-            action = "DESCRIBE_ENV"
+            # Last resort: safe no-op style action
+            action = "DESCRIBE"
             explanation = (
-                explanation
-                + " (Chosen DESCRIBE_ENV as a safe default due to invalid action.)"
-            )
+                (explanation + " ") if explanation else ""
+            ) + "(Invalid action received; defaulted to DESCRIBE.)"
 
         return action, explanation
 
     @staticmethod
     def _fallback_extract_action(text: str, actions: List[str]) -> str:
-        upper_text = text.upper()
+        upper = text.upper()
         for act in actions:
-            if act in upper_text:
+            if act in upper:
                 return act
-        return "DESCRIBE_ENV"
+        return "DESCRIBE"
