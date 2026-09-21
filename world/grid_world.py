@@ -1,58 +1,73 @@
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class GridWorld:
     """
-    Simple 2D grid world.
+    Simple 2D grid world for LLM agents.
 
     Legend:
       '#' = wall
       '.' = empty
-      'A' = agent
+      'A' = agent (starting position)
       'K' = key
       'D' = locked door
-      'G' = goal tile behind the door
+      'G' = goal tile
     """
 
-    def __init__(self) -> None:
-        # Fixed grid layout for simplicity
-        self._base_grid = [
-            list("########"),
-            list("#A..K..#"),
-            list("#..##..#"),
-            list("#..D.G.#"),
-            list("########"),
-        ]
+    DEFAULT_GRID = [
+        list("########"),
+        list("#A..K..#"),
+        list("#..##..#"),
+        list("#..D.G.#"),
+        list("########"),
+    ]
 
+    def __init__(self) -> None:
         self.grid: List[List[str]] = []
         self.agent_pos: Tuple[int, int] = (0, 0)
         self.inventory: Dict[str, bool] = {"has_key": False}
         self.goal_description: str = ""
         self.step_count: int = 0
-        self.max_steps: int = 0
+        self.max_steps: int = 40
+        self.door_open: bool = False
 
         self.action_space: List[str] = [
             "MOVE_UP",
             "MOVE_DOWN",
             "MOVE_LEFT",
             "MOVE_RIGHT",
-            "PICK_UP",
+            "PICK_UP_KEY",
             "OPEN_DOOR",
-            "DESCRIBE_ENV",
+            "DESCRIBE",
         ]
 
     def reset(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        self.grid = [row[:] for row in self._base_grid]
+        # Use custom grid from task if provided, otherwise default
+        base = task.get("grid") or self.DEFAULT_GRID
+        self.grid = [row[:] for row in base]
+
         self.inventory = {"has_key": False}
-        self.goal_description = task.get("goal", "Find the key and open the door.")
-        self.max_steps = task.get("max_steps", 40)
+        self.door_open = False
+        self.goal_description = task.get(
+            "goal", "Find the key, open the door, and reach the goal."
+        )
+        self.max_steps = int(task.get("max_steps", 40))
         self.step_count = 0
 
-        # Find agent initial position
+        # Locate agent start
+        found = False
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if cell == "A":
                     self.agent_pos = (x, y)
+                    self.grid[y][x] = "."  # agent is tracked separately
+                    found = True
+                    break
+            if found:
+                break
+
+        if not found:
+            raise ValueError("No agent start position 'A' found in grid")
 
         return self._build_observation()
 
@@ -64,40 +79,35 @@ class GridWorld:
 
         if action not in self.action_space:
             info["error"] = f"Invalid action: {action}"
+            reward -= 0.2
             return self._build_observation(), reward, done, info
 
         if action.startswith("MOVE_"):
             moved, move_info = self._handle_move(action)
             info.update(move_info)
-            if not moved:
-                reward -= 0.1  # small penalty for bumping into walls
-            else:
-                reward -= 0.01  # small step cost
+            reward -= 0.01 if moved else 0.15
 
-        elif action == "PICK_UP":
+        elif action == "PICK_UP_KEY":
             picked, pick_info = self._handle_pick_up()
             info.update(pick_info)
-            if picked:
-                reward += 1.0
-            else:
-                reward -= 0.05
+            reward += 1.5 if picked else -0.1
 
         elif action == "OPEN_DOOR":
             opened, open_info = self._handle_open_door()
             info.update(open_info)
             if opened:
-                reward += 2.0
+                reward += 2.5
+                self.door_open = True
             else:
-                reward -= 0.1
+                reward -= 0.15
 
-        elif action == "DESCRIBE_ENV":
-            # No direct environment change; reward neutral
-            info["description"] = "Agent attempted to describe the environment."
+        elif action == "DESCRIBE":
+            info["description"] = self._describe()
 
-        # Check success condition: agent on 'G' and door opened
+        # Success: standing on goal
         x, y = self.agent_pos
         if self.grid[y][x] == "G":
-            reward += 5.0
+            reward += 8.0
             done = True
             info["success"] = True
             info["message"] = "Agent reached the goal tile."
@@ -105,36 +115,40 @@ class GridWorld:
         if self.step_count >= self.max_steps and not done:
             done = True
             info["success"] = False
-            info["message"] = "Max steps reached."
+            info["message"] = "Max steps reached without completing the goal."
 
         return self._build_observation(), reward, done, info
 
     def render(self) -> None:
-        """Prints the grid with the agent position."""
-        display_grid = [row[:] for row in self.grid]
+        display = [row[:] for row in self.grid]
         ax, ay = self.agent_pos
-        display_grid[ay][ax] = "A"
+        display[ay][ax] = "A"
 
-        print("Grid world:")
-        for row in display_grid:
+        print("Grid:")
+        for row in display:
             print("".join(row))
-        print(f"Inventory: {self.inventory}")
-        print(f"Goal: {self.goal_description}")
-        print(f"Step: {self.step_count}/{self.max_steps}")
+        print(f"Inventory : {self.inventory}")
+        print(f"Door open : {self.door_open}")
+        print(f"Goal      : {self.goal_description}")
+        print(f"Step      : {self.step_count}/{self.max_steps}")
 
-    # ----------------- Internal helpers ----------------- #
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _build_observation(self) -> Dict[str, Any]:
         return {
             "agent_position": list(self.agent_pos),
             "grid": ["".join(row) for row in self.grid],
             "inventory": self.inventory.copy(),
+            "door_open": self.door_open,
             "goal": self.goal_description,
             "step": self.step_count,
             "max_steps": self.max_steps,
+            "available_actions": self.action_space,
         }
 
-    def _handle_move(self, action: str):
+    def _handle_move(self, action: str) -> Tuple[bool, Dict[str, Any]]:
         dx, dy = 0, 0
         if action == "MOVE_UP":
             dy = -1
@@ -154,42 +168,55 @@ class GridWorld:
         target = self.grid[ny][nx]
         if target == "#":
             return False, {"error": "Bumped into a wall."}
-        if target == "D":
-            return False, {"error": "Door is closed. You must open it first."}
+        if target == "D" and not self.door_open:
+            return False, {"error": "Door is locked. Use OPEN_DOOR first."}
 
-        # Move agent
         self.agent_pos = (nx, ny)
         return True, {}
 
-    def _handle_pick_up(self):
+    def _handle_pick_up(self) -> Tuple[bool, Dict[str, Any]]:
         x, y = self.agent_pos
-        cell = self.grid[y][x]
-        if cell == "K":
+        if self.grid[y][x] == "K":
             self.inventory["has_key"] = True
-            self.grid[y][x] = "."  # remove key from grid
+            self.grid[y][x] = "."
             return True, {"message": "Picked up the key."}
-        return False, {"error": "Nothing to pick up here."}
+        return False, {"error": "No key here."}
 
-    def _handle_open_door(self):
+    def _handle_open_door(self) -> Tuple[bool, Dict[str, Any]]:
         if not self.inventory.get("has_key", False):
             return False, {"error": "You do not have the key."}
 
-        # Door is at a fixed position in this simple world
         door_pos = self._find_cell("D")
         if door_pos is None:
-            return False, {"error": "No door found to open."}
+            # Already opened earlier
+            if self.door_open:
+                return False, {"error": "Door is already open."}
+            return False, {"error": "No door found."}
 
         dx = abs(door_pos[0] - self.agent_pos[0])
         dy = abs(door_pos[1] - self.agent_pos[1])
         if dx + dy != 1:
-            return False, {"error": "You must stand next to the door to open it."}
+            return False, {"error": "You must stand next to the door."}
 
-        # Open the door: replace 'D' with '.'
         x, y = door_pos
-        self.grid[y][x] = "."
-        return True, {"message": "Door opened."}
+        self.grid[y][x] = "."  # open it
+        self.door_open = True
+        return True, {"message": "Door unlocked and opened."}
 
-    def _find_cell(self, target: str):
+    def _describe(self) -> str:
+        x, y = self.agent_pos
+        nearby = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                nx, ny = x + dx, y + dy
+                if self._in_bounds(nx, ny):
+                    cell = self.grid[ny][nx]
+                    if cell not in (".", "A"):
+                        nearby.append(f"{cell} at ({nx},{ny})")
+        inv = "has key" if self.inventory.get("has_key") else "no key"
+        return f"Standing at {self.agent_pos}. Inventory: {inv}. Nearby: {nearby or 'nothing special'}."
+
+    def _find_cell(self, target: str) -> Optional[Tuple[int, int]]:
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if cell == target:
