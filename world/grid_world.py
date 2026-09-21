@@ -22,7 +22,19 @@ class GridWorld:
         list("########"),
     ]
 
-    def __init__(self) -> None:
+    # ANSI colors for terminal rendering
+    COLORS = {
+        "#": "\033[90m",   # bright black / gray walls
+        ".": "\033[37m",   # white empty
+        "A": "\033[92m",   # green agent
+        "K": "\033[93m",   # yellow key
+        "D": "\033[91m",   # red door
+        "G": "\033[96m",   # cyan goal
+        "?": "\033[90m",   # fog
+        "reset": "\033[0m",
+    }
+
+    def __init__(self, partial_observability: bool = False, view_radius: int = 2) -> None:
         self.grid: List[List[str]] = []
         self.agent_pos: Tuple[int, int] = (0, 0)
         self.inventory: Dict[str, bool] = {"has_key": False}
@@ -30,6 +42,10 @@ class GridWorld:
         self.step_count: int = 0
         self.max_steps: int = 40
         self.door_open: bool = False
+        self.notes: List[str] = []  # agent memory
+
+        self.partial_observability = partial_observability
+        self.view_radius = view_radius
 
         self.action_space: List[str] = [
             "MOVE_UP",
@@ -38,29 +54,29 @@ class GridWorld:
             "MOVE_RIGHT",
             "PICK_UP_KEY",
             "OPEN_DOOR",
+            "WRITE_NOTE",
             "DESCRIBE",
         ]
 
     def reset(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        # Use custom grid from task if provided, otherwise default
         base = task.get("grid") or self.DEFAULT_GRID
         self.grid = [row[:] for row in base]
 
         self.inventory = {"has_key": False}
         self.door_open = False
+        self.notes = []
         self.goal_description = task.get(
             "goal", "Find the key, open the door, and reach the goal."
         )
         self.max_steps = int(task.get("max_steps", 40))
         self.step_count = 0
 
-        # Locate agent start
         found = False
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if cell == "A":
                     self.agent_pos = (x, y)
-                    self.grid[y][x] = "."  # agent is tracked separately
+                    self.grid[y][x] = "."
                     found = True
                     break
             if found:
@@ -71,7 +87,7 @@ class GridWorld:
 
         return self._build_observation()
 
-    def step(self, action: str):
+    def step(self, action: str, note_text: str | None = None):
         self.step_count += 1
         reward = 0.0
         done = False
@@ -101,10 +117,24 @@ class GridWorld:
             else:
                 reward -= 0.15
 
+        elif action == "WRITE_NOTE":
+            text = (note_text or "").strip()
+            if text:
+                # Keep notes short and limited
+                note = text[:120]
+                self.notes.append(note)
+                # Keep only the last 8 notes
+                self.notes = self.notes[-8:]
+                info["message"] = f"Note saved: {note}"
+                reward += 0.05
+            else:
+                info["error"] = "WRITE_NOTE requires non-empty text."
+                reward -= 0.05
+
         elif action == "DESCRIBE":
             info["description"] = self._describe()
 
-        # Success: standing on goal
+        # Success check
         x, y = self.agent_pos
         if self.grid[y][x] == "G":
             reward += 8.0
@@ -119,34 +149,76 @@ class GridWorld:
 
         return self._build_observation(), reward, done, info
 
-    def render(self) -> None:
-        display = [row[:] for row in self.grid]
+    def render(self, use_color: bool = True) -> None:
+        display = self._visible_grid() if self.partial_observability else [row[:] for row in self.grid]
         ax, ay = self.agent_pos
-        display[ay][ax] = "A"
+
+        # Place agent on the visible grid
+        if 0 <= ay < len(display) and 0 <= ax < len(display[0]):
+            display[ay][ax] = "A"
 
         print("Grid:")
         for row in display:
-            print("".join(row))
+            if use_color:
+                colored = "".join(
+                    f"{self.COLORS.get(c, '')}{c}{self.COLORS['reset']}" for c in row
+                )
+                print(colored)
+            else:
+                print("".join(row))
+
         print(f"Inventory : {self.inventory}")
         print(f"Door open : {self.door_open}")
+        print(f"Notes     : {self.notes[-3:] if self.notes else '[]'}")
         print(f"Goal      : {self.goal_description}")
         print(f"Step      : {self.step_count}/{self.max_steps}")
+        if self.partial_observability:
+            print(f"Vision    : radius {self.view_radius} (fog-of-war)")
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Observation & visibility
     # ------------------------------------------------------------------
 
     def _build_observation(self) -> Dict[str, Any]:
+        if self.partial_observability:
+            visible = ["".join(row) for row in self._visible_grid()]
+        else:
+            visible = ["".join(row) for row in self.grid]
+
         return {
             "agent_position": list(self.agent_pos),
-            "grid": ["".join(row) for row in self.grid],
+            "grid": visible,
             "inventory": self.inventory.copy(),
             "door_open": self.door_open,
+            "notes": self.notes.copy(),
             "goal": self.goal_description,
             "step": self.step_count,
             "max_steps": self.max_steps,
+            "partial_observability": self.partial_observability,
             "available_actions": self.action_space,
         }
+
+    def _visible_grid(self) -> List[List[str]]:
+        """Return a grid where cells outside the view radius are replaced by '?'."""
+        h = len(self.grid)
+        w = len(self.grid[0]) if h else 0
+        ax, ay = self.agent_pos
+        visible = []
+
+        for y in range(h):
+            row = []
+            for x in range(w):
+                dist = abs(x - ax) + abs(y - ay)  # Manhattan
+                if dist <= self.view_radius:
+                    row.append(self.grid[y][x])
+                else:
+                    row.append("?")
+            visible.append(row)
+        return visible
+
+    # ------------------------------------------------------------------
+    # Action handlers
+    # ------------------------------------------------------------------
 
     def _handle_move(self, action: str) -> Tuple[bool, Dict[str, Any]]:
         dx, dy = 0, 0
@@ -188,7 +260,6 @@ class GridWorld:
 
         door_pos = self._find_cell("D")
         if door_pos is None:
-            # Already opened earlier
             if self.door_open:
                 return False, {"error": "Door is already open."}
             return False, {"error": "No door found."}
@@ -199,7 +270,7 @@ class GridWorld:
             return False, {"error": "You must stand next to the door."}
 
         x, y = door_pos
-        self.grid[y][x] = "."  # open it
+        self.grid[y][x] = "."
         self.door_open = True
         return True, {"message": "Door unlocked and opened."}
 
@@ -214,7 +285,11 @@ class GridWorld:
                     if cell not in (".", "A"):
                         nearby.append(f"{cell} at ({nx},{ny})")
         inv = "has key" if self.inventory.get("has_key") else "no key"
-        return f"Standing at {self.agent_pos}. Inventory: {inv}. Nearby: {nearby or 'nothing special'}."
+        notes_preview = self.notes[-2:] if self.notes else []
+        return (
+            f"Standing at {self.agent_pos}. Inventory: {inv}. "
+            f"Nearby: {nearby or 'nothing special'}. Recent notes: {notes_preview}"
+        )
 
     def _find_cell(self, target: str) -> Optional[Tuple[int, int]]:
         for y, row in enumerate(self.grid):
