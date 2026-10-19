@@ -69,7 +69,7 @@ def _successors(grid, state: State, key, door):
         yield action, (nx, ny, has_key, key_on_grid, door_closed)
 
     if key_on_grid and (x, y) == key:
-        yield "PICK_UP", (x, y, True, False, door_closed)
+        yield "PICK_UP_KEY", (x, y, True, False, door_closed)
 
     if has_key and door_closed and abs(door[0] - x) + abs(door[1] - y) == 1:
         yield "OPEN_DOOR", (x, y, has_key, key_on_grid, False)

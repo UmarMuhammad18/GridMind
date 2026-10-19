@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,9 @@ def run_episode(
     pricing: dict[str, float] | None = None,
     verbose: bool = True,
     log_dir: str | Path | None = "logs",
+    visualizer: Any | None = None,
 ) -> EpisodeResult:
+    """`visualizer` is an optional world.visualizer.Visualizer window to draw into."""
     agent.reset()
     observation, _ = env.reset()
     history: list[dict[str, Any]] = []
@@ -53,6 +56,10 @@ def run_episode(
         if verbose:
             print(f"\n=== STEP {env.step_count} ===")
             env.render()
+        if visualizer and not _draw(visualizer, observation, getattr(agent, "notes", [])):
+            if verbose:
+                print("Visualizer window closed; stopping episode.")
+            break
 
         decision = agent.act(observation, env.action_space, history)
         if verbose:
@@ -87,6 +94,10 @@ def run_episode(
                 print("\nEpisode finished.")
                 env.render()
                 print(f"Final info: {info}")
+            if visualizer:
+                _draw(visualizer, observation, getattr(agent, "notes", []),
+                      status=str(info.get("message", "")))
+                time.sleep(1.5)
             break
 
     usage = getattr(agent, "usage", None)
@@ -111,6 +122,21 @@ def run_episode(
         if verbose:
             print(f"\nLog saved to: {result.log_path}")
     return result
+
+
+def _draw(visualizer: Any, observation: dict[str, Any], notes: list[str],
+          status: str = "") -> bool:
+    """Draw one frame; returns False if the window was closed."""
+    return visualizer.draw(
+        grid=observation["grid"],
+        agent_pos=tuple(observation["agent_position"]),
+        inventory=observation["inventory"],
+        door_open=observation["door_open"],
+        notes=notes,
+        step=observation["step"],
+        max_steps=observation["max_steps"],
+        status=status,
+    )
 
 
 def save_logs(result: EpisodeResult, final_observation: dict[str, Any],

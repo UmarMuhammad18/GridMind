@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from world.levels import load_level
+from world.levels import list_levels, load_level
 from world.solver import find_cell, solve
 
 DEFAULT_GOAL = "Find the key, then go to the door, open it, and reach the goal tile behind it."
@@ -31,6 +31,10 @@ def make_task(level: str = "key_door", seed: int | None = None,
 
     name = f"random-{seed}" if level == "random" else level
     return Task(name=name, grid=tuple(grid), max_steps=max_steps, optimal_steps=optimal)
+
+
+def list_tasks() -> list[str]:
+    return [*list_levels(), "random"]
 
 
 KEY_DOOR_TASK = make_task("key_door")

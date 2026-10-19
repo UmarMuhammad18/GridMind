@@ -12,9 +12,11 @@ Grid legend:
 Coordinates are [x, y]: x is the column, y is the row (row 0 is the top).
 MOVE_UP decreases y, MOVE_DOWN increases y, MOVE_LEFT decreases x, MOVE_RIGHT increases x.
 "standing_on" tells you what is under you, since 'A' hides it on the grid.
+When "partial_observability" is true, '?' cells are out of view: explore to find
+the key, door and goal, and use your notes to remember where things are.
 
 Rules:
-- To take the key, stand on its tile and use PICK_UP.
+- To take the key, stand on its tile and use PICK_UP_KEY.
 - To open the door, hold the key and stand directly next to the door
   (up, down, left or right, not diagonal), then use OPEN_DOOR.
 - Walls and closed doors cannot be walked through.

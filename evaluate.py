@@ -19,7 +19,7 @@ from agent.factory import AGENT_KINDS, make_agent
 from agent.llm_clients import LLMError
 from agent.prompt_templates import SYSTEM_PROMPTS
 from config import load_config
-from main import add_llm_arguments
+from main import add_env_arguments, add_llm_arguments
 from runner import EpisodeResult, run_episode
 from world.grid_world import GridWorld
 from world.levels import LevelError, list_levels
@@ -42,6 +42,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Compare several system prompts.")
     parser.add_argument("--save-logs", action="store_true", help="Write a log per episode.")
     parser.add_argument("--out-dir", default="logs", help="Where to write the summary JSON.")
+    add_env_arguments(parser)
     add_llm_arguments(parser)
     return parser.parse_args(argv)
 
@@ -116,8 +117,10 @@ def main(argv: list[str] | None = None) -> int:
                     seed = args.seed + i
                     task = make_task(level, seed=seed)
                     agent = make_agent(kind, config, seed=seed)
+                    env = GridWorld(task, partial_observability=args.partial,
+                                    view_radius=args.view_radius)
                     result = run_episode(
-                        GridWorld(task), agent, seed=seed, pricing=config.get("pricing"),
+                        env, agent, seed=seed, pricing=config.get("pricing"),
                         verbose=False, log_dir=args.out_dir if args.save_logs else None,
                     )
                     results.append(result)

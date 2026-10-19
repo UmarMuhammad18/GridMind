@@ -52,8 +52,8 @@ def test_parse_response_accepts_valid_json():
 
 
 def test_parse_response_strips_code_fences():
-    text = "```json\n" + reply("PICK_UP") + "\n```"
-    assert parse_response(text, ACTIONS)[0] == "PICK_UP"
+    text = "```json\n" + reply("PICK_UP_KEY") + "\n```"
+    assert parse_response(text, ACTIONS)[0] == "PICK_UP_KEY"
 
 
 @pytest.mark.parametrize("text", ["not json", "[1, 2]", reply("FLY")])
@@ -83,7 +83,7 @@ def test_llm_agent_falls_back_after_retries():
     agent = LLMAgent(FakeClient(["garbage"] * 3), max_retries=2)
     obs, _ = GridWorld().reset()
     decision = agent.act(obs, ACTIONS, [])
-    assert decision.action == "DESCRIBE_ENV"
+    assert decision.action == "DESCRIBE"
     assert not decision.valid
     assert agent.usage.calls == 3
 

@@ -46,7 +46,7 @@ The agent is at `[4, 1]` and the observation reports `"standing_on": "K"`.
 
 ```json
 {
-  "action": "PICK_UP",
+  "action": "PICK_UP_KEY",
   "explanation": "I am standing on the key, so I pick it up.",
   "note": ""
 }

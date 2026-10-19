@@ -1,6 +1,6 @@
 """
-Thin provider layer so the agent can talk to OpenAI, Anthropic, or a local
-OpenAI-compatible server (e.g. Ollama) through one interface.
+Thin provider layer so the agent can talk to OpenAI, Anthropic, Groq, or a
+local OpenAI-compatible server (e.g. Ollama) through one interface.
 
 Transient errors (rate limits, 5xx, network) are retried with backoff by the
 provider SDKs themselves via `api_retries`.
@@ -24,11 +24,17 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = {
     "openai": {"model": "gpt-4o-mini", "temperature": 0.2},
     "anthropic": {"model": "claude-opus-5-5", "effort": "low"},
+    "groq": {"model": "llama-3.3-70b-versatile", "temperature": 0.2,
+             "base_url": "https://api.groq.com/openai/v1"},
     "ollama": {"model": "llama3.1", "temperature": 0.2,
                "base_url": "http://localhost:11434/v1"},
 }
 
-API_KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+API_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
 
 
 class LLMError(RuntimeError):
@@ -150,7 +156,7 @@ def make_client(config: dict[str, Any]) -> LLMClient:
             api_retries=api_retries,
             fallbacks=config.get("fallbacks", True),
         )
-    if provider in ("openai", "ollama"):
+    if provider in ("openai", "groq", "ollama"):
         return OpenAIClient(
             model=config["model"],
             # Ollama ignores the key, but the OpenAI SDK requires one.

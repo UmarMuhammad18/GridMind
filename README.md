@@ -12,16 +12,17 @@ The project places an LLM inside a virtual environment where it must perceive th
 
 ## Features
 
-* Fully observable 2D grid world with a Gymnasium-style API
+* 2D grid world with a Gymnasium-style API, fully observable or with fog of war
 * Interactive objects (keys, locked doors, goals)
 * Levels loaded from text files, plus seeded random level generation
 * Every level is checked for solvability, and the goal can only be reached through the door
-* Pluggable LLM providers: OpenAI, Anthropic (Claude), and local models via Ollama
+* Pluggable LLM providers: OpenAI, Anthropic (Claude), Groq, and local models via Ollama
 * Enforced JSON output, automatic re-asking on invalid replies, and API retries
 * Agent memory: recent moves with positions, loop detection, and self-written notes
 * Baseline agents: random (lower bound) and BFS-optimal (upper bound)
 * Evaluation script reporting success rate, efficiency, invalid actions, tokens and cost
-* Episode logs with a terminal replay viewer
+* Colored terminal output and an optional Pygame window, live or for replays
+* Episode logs with a replay viewer
 * Test suite and CI
 
 ---
@@ -100,6 +101,8 @@ The agent receives structured JSON observations:
     "########"
   ],
   "inventory": { "has_key": false },
+  "door_open": false,
+  "partial_observability": false,
   "goal": "Find the key, then go to the door, open it, and reach the goal tile behind it.",
   "step": 0,
   "max_steps": 40
@@ -107,6 +110,10 @@ The agent receives structured JSON observations:
 ```
 
 Coordinates are `[x, y]`: `x` is the column, `y` is the row, and `y` grows downward. `standing_on` reports the tile under the agent, since `A` hides it on the grid.
+
+### Fog of war
+
+With `--partial`, the agent only sees tiles within `--view-radius` steps (Manhattan distance, default 2); everything else is shown as `?`. The agent has to explore, and its notes become its map. The BFS baseline assumes it can see the whole grid, so it isn't a meaningful upper bound in this mode.
 
 ---
 
@@ -117,14 +124,14 @@ MOVE_UP
 MOVE_DOWN
 MOVE_LEFT
 MOVE_RIGHT
-PICK_UP
+PICK_UP_KEY
 OPEN_DOOR
-DESCRIBE_ENV
+DESCRIBE
 ```
 
-* `PICK_UP` works while standing on the key.
+* `PICK_UP_KEY` works while standing on the key.
 * `OPEN_DOOR` works while holding the key and standing next to the door (not diagonally).
-* `DESCRIBE_ENV` returns a text description of the neighbouring tiles.
+* `DESCRIBE` returns a text description of the neighbouring tiles.
 
 The LLM must reply with a JSON object:
 
@@ -136,19 +143,19 @@ The LLM must reply with a JSON object:
 }
 ```
 
-`note` is optional memory: notes are carried into later prompts. Invalid replies are sent back to the model with the error, and if it still fails the agent falls back to `DESCRIBE_ENV`. Each fallback counts as an invalid action in the metrics.
+`note` is optional memory: notes are carried into later prompts. Invalid replies are sent back to the model with the error, and if it still fails the agent falls back to `DESCRIBE`. Each fallback counts as an invalid action in the metrics.
 
 ### Rewards
 
 | Event                       | Reward |
 | --------------------------- | ------ |
 | Move                        | -0.01  |
-| Bump into wall / closed door, failed `OPEN_DOOR` | -0.1 |
-| Failed `PICK_UP`            | -0.05  |
-| Invalid action              | -0.1   |
-| Pick up key                 | +1.0   |
-| Open door                   | +2.0   |
-| Reach goal                  | +5.0   |
+| Bump into wall / closed door, failed `OPEN_DOOR` | -0.15 |
+| Failed `PICK_UP_KEY`        | -0.1   |
+| Invalid action              | -0.2   |
+| Pick up key                 | +1.5   |
+| Open door                   | +2.5   |
+| Reach goal                  | +8.0   |
 
 ---
 
@@ -173,6 +180,8 @@ Add your API key to a `.env` file (see `.env.example`):
 OPENAI_API_KEY=your_api_key
 # or
 ANTHROPIC_API_KEY=your_api_key
+# or
+GROQ_API_KEY=your_api_key
 ```
 
 Optionally copy `config.example.json` to `config.json` to set the provider, model, prompt, retries and pricing. Settings are applied in this order, later ones winning:
@@ -185,6 +194,7 @@ defaults < config.json < environment (.env) < command-line flags
 | ----------- | ----------------- | ------------------------------------------------------------- |
 | `openai`    | `gpt-4o-mini`     | JSON mode enforced                                            |
 | `anthropic` | `claude-opus-5-5` | JSON schema enforced, `effort` set to `low` (configurable)    |
+| `groq`      | `llama-3.3-70b-versatile` | Fast hosted open models, JSON mode enforced           |
 | `ollama`    | `llama3.1`        | Local, via `http://localhost:11434/v1`; no API key needed     |
 
 Costs are only reported when `pricing` (dollars per million input and output tokens) is set in `config.json`. Check your provider's current prices.
@@ -202,13 +212,19 @@ python main.py --level maze --prompt planner           # different level and pro
 python main.py --level random --seed 42                # generated level
 python main.py --agent bfs                             # optimal baseline, no API key needed
 python main.py --level path/to/my_level.txt            # your own level
+python main.py --partial --view-radius 2               # fog of war
+python main.py --visual                                # Pygame window
+python main.py --list-tasks                            # list levels
 ```
+
+`--task` works as an alias for `--level`. The Pygame window needs `pygame-ce` (included in `requirements.txt`); if it can't start, GridMind falls back to the terminal.
 
 Each run writes a JSON and text log to `logs/`. Replay a run in the terminal:
 
 ```bash
 python replay.py logs/run_<timestamp>_<agent>_<level>.json
 python replay.py logs/run_<...>.json --step            # press Enter to advance
+python replay.py logs/run_<...>.json --visual          # replay in the Pygame window
 ```
 
 ---
@@ -222,17 +238,18 @@ python evaluate.py --agents bfs random --levels key_door maze random --episodes 
 python evaluate.py --agents llm bfs --levels key_door two_rooms --episodes 5
 python evaluate.py --agents llm --models openai:gpt-4o-mini anthropic:claude-opus-5-5
 python evaluate.py --agents llm --prompts default planner
+python evaluate.py --agents llm random --partial       # benchmark under fog of war
 ```
 
 ```text
 Agent   Level     N  Success  Avg steps  Efficiency  Invalid  Reward  Tokens  Cost
 ------  --------  -  -------  ---------  ----------  -------  ------  ------  ----
-bfs     key_door  5  100%     11.0       100%        0%       7.91    0       -
-bfs     maze      5  100%     23.0       100%        0%       7.79    0       -
-bfs     random    5  100%     14.4       100%        0%       7.88    0       -
-random  key_door  5  0%       -          -           0%       -1.31   0       -
-random  maze      5  0%       -          -           0%       -3.39   0       -
-random  random    5  0%       -          -           0%       -1.38   0       -
+bfs     key_door  5  100%     11.0       100%        0%       11.91   0       -
+bfs     maze      5  100%     23.0       100%        0%       11.79   0       -
+bfs     random    5  100%     14.4       100%        0%       11.88   0       -
+random  key_door  5  0%       -          -           0%       -2.03   0       -
+random  maze      5  0%       -          -           0%       -5.25   0       -
+random  random    5  0%       -          -           0%       -2.14   0       -
 ```
 
 * **Success**: share of episodes that reached the goal.
@@ -268,7 +285,7 @@ Levels are plain text files in `levels/`:
 
 A level must be rectangular, surrounded by walls, have exactly one `A` and one `G`, at most one `K` and one `D`, and be solvable. These rules are checked on load. The step limit is 40 or three times the optimal path length, whichever is larger.
 
-Bundled levels: `key_door` (default), `two_rooms`, `maze`. Use `random` for a generated two-room level.
+Bundled levels: `key_door` (default), `two_rooms`, `maze`, `long_key` (the door is next to the start but the key is far away). Use `random` for a generated two-room level.
 
 ---
 
@@ -291,13 +308,14 @@ GridMind/
 ├── agent/
 │   ├── base.py             # Agent protocol, Decision, Usage
 │   ├── llm_agent.py        # LLM agent: prompting, parsing, retries, notes
-│   ├── llm_clients.py      # OpenAI / Anthropic / Ollama clients
+│   ├── llm_clients.py      # OpenAI / Anthropic / Groq / Ollama clients
 │   ├── prompt_templates.py # System prompts and user prompt builder
 │   ├── baselines.py        # RandomAgent, BFSAgent
 │   └── factory.py
 │
 ├── world/
-│   ├── grid_world.py       # The environment
+│   ├── grid_world.py       # The environment (incl. fog of war, colored rendering)
+│   ├── visualizer.py       # Optional Pygame window
 │   ├── levels.py           # Level loading, validation, generation
 │   ├── solver.py           # BFS solver
 │   └── tasks.py
@@ -353,11 +371,11 @@ This modular design makes it easy to swap environments, prompts, models, or task
 
 ## Future Improvements
 
-* Partial observability (fog of war)
 * Multi-room environments with several keys and doors
 * Additional object types and interactions
+* An exploring baseline for fog-of-war levels
 * Multi-agent simulations
-* Web-based or Pygame replay viewer
+* Web-based replay viewer
 * Reinforcement learning integrations
 
 ---
@@ -367,7 +385,8 @@ This modular design makes it easy to swap environments, prompts, models, or task
 | Component     | Technology                           |
 | ------------- | ------------------------------------ |
 | Language      | Python 3.10+                         |
-| LLM Interface | OpenAI, Anthropic, Ollama            |
+| LLM Interface | OpenAI, Anthropic, Groq, Ollama      |
+| Visualization | ANSI terminal colors, Pygame (pygame-ce) |
 | Configuration | JSON + `.env`                        |
 | Testing       | pytest, ruff, GitHub Actions         |
 | Environment   | Custom grid world (Gymnasium-style)  |

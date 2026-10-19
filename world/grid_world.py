@@ -8,20 +8,32 @@ ACTIONS: list[str] = [
     "MOVE_DOWN",
     "MOVE_LEFT",
     "MOVE_RIGHT",
-    "PICK_UP",
+    "PICK_UP_KEY",
     "OPEN_DOOR",
-    "DESCRIBE_ENV",
+    "DESCRIBE",
 ]
 
 CELL_NAMES = {"#": "wall", ".": "empty", "K": "key", "D": "locked door", "G": "goal"}
 
 STEP_COST = -0.01
-BUMP_PENALTY = -0.1
-FAILED_ACTION_PENALTY = -0.05
-INVALID_ACTION_PENALTY = -0.1
-KEY_REWARD = 1.0
-DOOR_REWARD = 2.0
-GOAL_REWARD = 5.0
+BUMP_PENALTY = -0.15
+FAILED_ACTION_PENALTY = -0.1
+INVALID_ACTION_PENALTY = -0.2
+KEY_REWARD = 1.5
+DOOR_REWARD = 2.5
+GOAL_REWARD = 8.0
+
+# ANSI colors for terminal rendering
+COLORS = {
+    "#": "\033[90m",   # gray walls
+    ".": "\033[37m",   # white empty
+    "A": "\033[92m",   # green agent
+    "K": "\033[93m",   # yellow key
+    "D": "\033[91m",   # red door
+    "G": "\033[96m",   # cyan goal
+    "?": "\033[90m",   # fog
+}
+RESET_COLOR = "\033[0m"
 
 
 class GridWorld:
@@ -36,17 +48,26 @@ class GridWorld:
       'D' = locked door
       'G' = goal tile behind the door
 
+      '?' = out of view (only with partial observability)
+
     Coordinates are (x, y): x is the column, y is the row, and y grows downward.
+
+    With partial_observability, the agent only sees cells within `view_radius`
+    (Manhattan distance); everything else is shown as '?'.
     """
 
-    def __init__(self, task: Task | None = None) -> None:
+    def __init__(self, task: Task | None = None, partial_observability: bool = False,
+                 view_radius: int = 2) -> None:
         self.task = task or make_task("key_door")
         self.action_space: list[str] = list(ACTIONS)
+        self.partial_observability = partial_observability
+        self.view_radius = view_radius
 
         self.grid: list[list[str]] = []
         self.agent_pos: tuple[int, int] = (0, 0)
         self.inventory: dict[str, bool] = {"has_key": False}
         self.step_count = 0
+        self.door_open = False
         self.done = True
 
     @property
@@ -64,6 +85,7 @@ class GridWorld:
         self.grid = [list(row) for row in self.task.grid]
         self.inventory = {"has_key": False}
         self.step_count = 0
+        self.door_open = False
         self.done = False
 
         for y, row in enumerate(self.grid):
@@ -92,7 +114,7 @@ class GridWorld:
             info.update(move_info)
             reward += STEP_COST if moved else BUMP_PENALTY
 
-        elif action == "PICK_UP":
+        elif action == "PICK_UP_KEY":
             picked, pick_info = self._handle_pick_up()
             info.update(pick_info)
             reward += KEY_REWARD if picked else FAILED_ACTION_PENALTY
@@ -102,7 +124,7 @@ class GridWorld:
             info.update(open_info)
             reward += DOOR_REWARD if opened else BUMP_PENALTY
 
-        elif action == "DESCRIBE_ENV":
+        elif action == "DESCRIBE":
             info["description"] = self._describe_surroundings()
 
         terminated = self._current_cell() == "G"
@@ -119,30 +141,48 @@ class GridWorld:
         self.done = terminated or truncated
         return self._build_observation(), reward, terminated, truncated, info
 
-    def render_text(self) -> str:
-        lines = ["Grid world:", *self._grid_with_agent()]
+    def render_text(self, use_color: bool = False) -> str:
+        rows = self.visible_grid()
+        if use_color:
+            rows = ["".join(f"{COLORS.get(c, '')}{c}{RESET_COLOR}" for c in row) for row in rows]
+        lines = ["Grid world:", *rows]
         lines.append(f"Inventory: {self.inventory}")
+        lines.append(f"Door open: {self.door_open}")
         lines.append(f"Goal: {self.goal_description}")
         lines.append(f"Step: {self.step_count}/{self.max_steps}")
+        if self.partial_observability:
+            lines.append(f"Vision: radius {self.view_radius} (fog of war)")
         return "\n".join(lines)
 
-    def render(self) -> None:
-        print(self.render_text())
+    def render(self, use_color: bool = True) -> None:
+        print(self.render_text(use_color))
+
+    def visible_grid(self) -> list[str]:
+        """The grid as the agent sees it: agent drawn in, fog applied if enabled."""
+        ax, ay = self.agent_pos
+        rows = []
+        for y, row in enumerate(self.grid):
+            cells = []
+            for x, cell in enumerate(row):
+                if (x, y) == (ax, ay):
+                    cells.append("A")
+                elif self.partial_observability and abs(x - ax) + abs(y - ay) > self.view_radius:
+                    cells.append("?")
+                else:
+                    cells.append(cell)
+            rows.append("".join(cells))
+        return rows
 
     # ----------------- Internal helpers ----------------- #
-
-    def _grid_with_agent(self) -> list[str]:
-        display = [row[:] for row in self.grid]
-        ax, ay = self.agent_pos
-        display[ay][ax] = "A"
-        return ["".join(row) for row in display]
 
     def _build_observation(self) -> dict[str, Any]:
         return {
             "agent_position": list(self.agent_pos),
             "standing_on": self._current_cell(),
-            "grid": self._grid_with_agent(),
+            "grid": self.visible_grid(),
             "inventory": self.inventory.copy(),
+            "door_open": self.door_open,
+            "partial_observability": self.partial_observability,
             "goal": self.goal_description,
             "step": self.step_count,
             "max_steps": self.max_steps,
@@ -192,6 +232,7 @@ class GridWorld:
 
         x, y = door_pos
         self.grid[y][x] = "."
+        self.door_open = True
         return True, {"message": "Door opened."}
 
     def _describe_surroundings(self) -> str:

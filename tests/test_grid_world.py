@@ -63,16 +63,16 @@ def test_closed_door_blocks_movement():
 
 def test_pick_up_key():
     env = make_env()
-    obs, reward, _, _, info = play(env, ["MOVE_RIGHT", "PICK_UP"])
+    obs, reward, _, _, info = play(env, ["MOVE_RIGHT", "PICK_UP_KEY"])
     assert obs["inventory"]["has_key"]
     assert obs["standing_on"] == "."
-    assert reward == 1.0
+    assert reward == 1.5
     assert info["message"] == "Picked up the key."
 
 
 def test_pick_up_with_nothing_there_fails():
     env = make_env()
-    _, reward, _, _, info = env.step("PICK_UP")
+    _, reward, _, _, info = env.step("PICK_UP_KEY")
     assert reward < 0
     assert info["error"] == "Nothing to pick up here."
 
@@ -91,7 +91,7 @@ def test_open_door_must_be_adjacent():
             "#..G.#",
             "######")
     env = make_env(grid)
-    _, _, _, _, info = play(env, ["MOVE_RIGHT", "MOVE_RIGHT", "PICK_UP", "MOVE_RIGHT",
+    _, _, _, _, info = play(env, ["MOVE_RIGHT", "MOVE_RIGHT", "PICK_UP_KEY", "MOVE_RIGHT",
                                   "MOVE_RIGHT"])  # second move bumps the wall
     assert env.agent_pos == (4, 1)
     _, _, _, _, info = env.step("OPEN_DOOR")
@@ -101,11 +101,11 @@ def test_open_door_must_be_adjacent():
 def test_full_solution_reaches_goal():
     env = make_env()
     obs, reward, terminated, truncated, info = play(
-        env, ["MOVE_RIGHT", "PICK_UP", "OPEN_DOOR", "MOVE_DOWN", "MOVE_DOWN"]
+        env, ["MOVE_RIGHT", "PICK_UP_KEY", "OPEN_DOOR", "MOVE_DOWN", "MOVE_DOWN"]
     )
     assert terminated and not truncated
     assert info["success"] is True
-    assert reward == pytest.approx(-0.01 + 5.0)
+    assert reward == pytest.approx(-0.01 + 8.0)
     assert obs["agent_position"] == [2, 3]
 
 
@@ -142,7 +142,7 @@ def test_invalid_action_is_penalised():
 
 def test_describe_env_lists_neighbours():
     env = make_env()
-    _, reward, _, _, info = env.step("DESCRIBE_ENV")
+    _, reward, _, _, info = env.step("DESCRIBE")
     assert reward == 0
     assert "right: key" in info["description"]
     assert "up: wall" in info["description"]
@@ -150,8 +150,45 @@ def test_describe_env_lists_neighbours():
 
 def test_reset_restores_state():
     env = make_env()
-    play(env, ["MOVE_RIGHT", "PICK_UP"])
+    play(env, ["MOVE_RIGHT", "PICK_UP_KEY"])
     obs, _ = env.reset()
     assert obs["inventory"]["has_key"] is False
     assert "K" in "".join(obs["grid"])
     assert obs["step"] == 0
+
+
+def test_door_open_flag_in_observation():
+    env = make_env()
+    obs, *_ = play(env, ["MOVE_RIGHT", "PICK_UP_KEY"])
+    assert obs["door_open"] is False
+    obs, *_ = env.step("OPEN_DOOR")
+    assert obs["door_open"] is True
+
+
+def test_partial_observability_hides_far_cells():
+    env = GridWorld(make_task("key_door"), partial_observability=True, view_radius=1)
+    obs, _ = env.reset()
+    grid = obs["grid"]
+    assert obs["partial_observability"] is True
+    assert grid[1][1] == "A"
+    assert grid[1][2] == "."            # distance 1: visible
+    assert grid[1][4] == "?"            # key at distance 3: hidden
+    assert "G" not in "".join(grid)
+
+
+def test_partial_observability_reveals_cells_as_agent_moves():
+    env = GridWorld(make_task("key_door"), partial_observability=True, view_radius=1)
+    env.reset()
+    obs, *_ = play(env, ["MOVE_RIGHT", "MOVE_RIGHT"])
+    assert obs["grid"][1][4] == "K"
+
+
+def test_full_observability_has_no_fog():
+    obs, _ = GridWorld().reset()
+    assert "?" not in "".join(obs["grid"])
+
+
+def test_colored_render_uses_ansi_codes():
+    env = make_env()
+    assert "\033[" in env.render_text(use_color=True)
+    assert "\033[" not in env.render_text()

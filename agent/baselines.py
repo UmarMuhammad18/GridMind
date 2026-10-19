@@ -34,5 +34,5 @@ class BFSAgent:
             history: list[dict[str, Any]]) -> Decision:
         plan = solve_from_observation(observation)
         if not plan:
-            return Decision("DESCRIBE_ENV", "No path to the goal exists.")
+            return Decision("DESCRIBE", "No path to the goal exists.")
         return Decision(plan[0], f"Shortest path: {len(plan)} actions remaining.")

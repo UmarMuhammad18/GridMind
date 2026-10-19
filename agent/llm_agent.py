@@ -5,7 +5,7 @@ from agent.base import Decision, Usage
 from agent.llm_clients import LLMClient
 from agent.prompt_templates import SYSTEM_PROMPTS, build_user_prompt
 
-FALLBACK_ACTION = "DESCRIBE_ENV"
+FALLBACK_ACTION = "DESCRIBE"
 
 
 class ResponseError(ValueError):

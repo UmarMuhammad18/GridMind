@@ -64,3 +64,49 @@ def test_config_layering(tmp_path, monkeypatch):
     assert switched["model"] == "claude-opus-5-5"  # file's OpenAI model not carried over
     assert switched["api_key"] == "sk-test"
     assert "temperature" not in switched
+
+
+class FakeVisualizer:
+    def __init__(self, close_after=None):
+        self.frames = []
+        self.close_after = close_after
+
+    def draw(self, **frame):
+        self.frames.append(frame)
+        return self.close_after is None or len(self.frames) < self.close_after
+
+
+def test_runner_draws_every_step_and_final_frame():
+    viz = FakeVisualizer()
+    result = run_episode(GridWorld(), BFSAgent(), verbose=False, log_dir=None, visualizer=viz)
+    assert len(viz.frames) == result.steps + 1
+    assert viz.frames[-1]["status"] == "Agent reached the goal tile."
+
+
+def test_closing_visualizer_stops_episode():
+    viz = FakeVisualizer(close_after=3)
+    result = run_episode(GridWorld(), BFSAgent(), verbose=False, log_dir=None, visualizer=viz)
+    assert result.steps == 2
+    assert not result.success
+
+
+def test_real_visualizer_draws_headless(monkeypatch):
+    import pytest
+
+    pytest.importorskip("pygame")
+    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
+    from world.visualizer import Visualizer
+
+    viz = Visualizer()
+    obs, _ = GridWorld().reset()
+    try:
+        assert viz.draw(grid=obs["grid"], agent_pos=(1, 1), inventory=obs["inventory"],
+                        door_open=False, notes=[], step=0, max_steps=40) is True
+    finally:
+        viz.close()
+
+
+def test_main_lists_tasks(capsys):
+    assert main.main(["--list-tasks"]) == 0
+    out = capsys.readouterr().out.split()
+    assert {"key_door", "long_key", "maze", "two_rooms", "random"} <= set(out)
