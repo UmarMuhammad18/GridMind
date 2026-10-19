@@ -1,10 +1,11 @@
 # Sample Run — GridMind
 
-This document shows an example episode from a GridMind agent run.
+This is an illustrative episode on the default `key_door` level, showing the
+key moments of a successful run. The shortest solution is 11 steps.
 
 The agent's objective is:
 
-> Find the key, unlock the door, and reach the goal tile.
+> Find the key, then go to the door, open it, and reach the goal tile behind it.
 
 ---
 
@@ -15,19 +16,21 @@ The agent's objective is:
 ```text
 ########
 #A..K..#
-#..##..#
-#..D.G.#
+#......#
+###D####
+#....G.#
 ########
 ```
 
-### Agent Response
+The goal `G` is sealed off: the only way in is through the locked door `D`.
 
-**Action**
+### Agent Response
 
 ```json
 {
   "action": "MOVE_RIGHT",
-  "explanation": "Moving right brings me closer to the key."
+  "explanation": "I am at [1, 1] and the key is at [4, 1], so I move right toward it.",
+  "note": "Key at [4, 1], door at [3, 3], goal at [5, 4]."
 }
 ```
 
@@ -37,16 +40,15 @@ The agent's objective is:
 
 ### Environment Update
 
-The agent reaches the key tile.
+The agent is at `[4, 1]` and the observation reports `"standing_on": "K"`.
 
 ### Agent Response
 
-**Action**
-
 ```json
 {
-  "action": "PICK_UP",
-  "explanation": "I am standing on the key, so I should pick it up."
+  "action": "PICK_UP_KEY",
+  "explanation": "I am standing on the key, so I pick it up.",
+  "note": ""
 }
 ```
 
@@ -60,38 +62,48 @@ The agent reaches the key tile.
 
 ---
 
-## Step 9
+## Step 6
 
-### Environment Update
+### Environment State
 
-The agent is standing adjacent to the locked door.
+```text
+########
+#......#
+#..A...#
+###D####
+#....G.#
+########
+```
 
 ### Agent Response
-
-**Action**
 
 ```json
 {
   "action": "OPEN_DOOR",
-  "explanation": "I have the key and I am next to the door."
+  "explanation": "I have the key and the door is directly below me.",
+  "note": ""
 }
 ```
 
-### Door State
+### Environment Update
 
-```json
-{
-  "door_open": true
-}
+```text
+Door opened.
 ```
 
 ---
 
-## Step 12
+## Step 10
 
-### Environment Update
+### Agent Response
 
-The agent reaches the goal tile.
+```json
+{
+  "action": "MOVE_RIGHT",
+  "explanation": "The goal is one tile to my right.",
+  "note": ""
+}
+```
 
 ### Episode Result
 
@@ -106,9 +118,10 @@ The agent reaches the goal tile.
 
 ## Summary
 
-| Metric          | Value  |
-| --------------- | ------ |
-| Total Steps     | 12     |
+| Metric          | Value   |
+| --------------- | ------- |
+| Total Steps     | 11      |
+| Optimal Steps   | 11      |
 | Key Collected   | ✅ Yes  |
 | Door Opened     | ✅ Yes  |
 | Goal Reached    | ✅ Yes  |
@@ -121,4 +134,8 @@ The agent successfully completed the task by:
 3. Opening the locked door.
 4. Reaching the goal tile.
 
-This demonstrates the complete perception → reasoning → action loop used by GridMind.
+To watch a real run step by step, replay its log:
+
+```bash
+python replay.py logs/run_<timestamp>_<agent>_<level>.json
+```

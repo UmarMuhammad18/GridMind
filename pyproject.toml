@@ -1,0 +1,28 @@
+[project]
+name = "gridmind"
+version = "0.2.0"
+description = "A grid-world benchmark for LLM-driven agents."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Umar Muhammad" }]
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40",
+    "anthropic>=1.0",
+    "python-dotenv>=1.0",
+    "pygame-ce>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

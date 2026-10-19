@@ -1,60 +1,90 @@
 import json
-from typing import Any, Dict, List
+from typing import Any
 
+_BASE_PROMPT = """
+You are an agent acting inside a 2D grid world environment.
 
-SYSTEM_PROMPT = """
-You are an autonomous agent inside a 2D grid world.
+You must achieve the given goal by choosing exactly ONE action per step
+from the allowed action space.
 
-Your job is to achieve the given goal by choosing exactly ONE action per step
-from the allowed action list.
-
-You MUST reply with a single valid JSON object and nothing else:
-
-{
-  "action": "<ONE_OF_THE_ALLOWED_ACTIONS>",
-  "explanation": "<short reasoning in 1-2 sentences>",
-  "note": "<optional short note to remember, only when using WRITE_NOTE>"
-}
+Grid legend:
+  '#' wall, '.' empty, 'A' you, 'K' key, 'D' locked door, 'G' goal.
+Coordinates are [x, y]: x is the column, y is the row (row 0 is the top).
+MOVE_UP decreases y, MOVE_DOWN increases y, MOVE_LEFT decreases x, MOVE_RIGHT increases x.
+"standing_on" tells you what is under you, since 'A' hides it on the grid.
+When "partial_observability" is true, '?' cells are out of view: explore to find
+the key, door and goal, and use your notes to remember where things are.
 
 Rules:
-- Only use actions from the provided list.
-- Never invent new actions.
-- Prefer efficient paths toward the goal.
-- If you see a key ('K'), pick it up when standing on it (PICK_UP_KEY).
-- You must open the door ('D') with OPEN_DOOR while standing next to it (and holding the key) before you can walk through.
-- Use WRITE_NOTE to remember important locations or facts (e.g. "Key is at (4,1)"). Notes persist and appear in future observations.
-- Reach the goal tile ('G') to finish.
-- When partial_observability is true, cells shown as '?' are unknown / out of view.
+- To take the key, stand on its tile and use PICK_UP_KEY.
+- To open the door, hold the key and stand directly next to the door
+  (up, down, left or right, not diagonal), then use OPEN_DOOR.
+- Walls and closed doors cannot be walked through.
+- The episode ends as soon as you step onto the goal tile.
+{extra}
+You MUST respond with a single JSON object of the form:
+
+{{
+  "action": "<ONE_OF_THE_ALLOWED_ACTIONS>",
+  "explanation": "<short reasoning in one or two sentences>",
+  "note": "<a short fact worth remembering for later steps, or an empty string>"
+}}
+
+Only choose actions from the provided list. Do not include any extra keys.
 """.strip()
+
+_PLANNER_EXTRA = """
+Before choosing, work out the coordinates of yourself, the key, the door and the
+goal, then plan the shortest route for the current sub-goal (key, then door, then
+goal). Put that plan briefly in your explanation and take its first action.
+"""
+
+SYSTEM_PROMPTS: dict[str, str] = {
+    "default": _BASE_PROMPT.format(extra=""),
+    "planner": _BASE_PROMPT.format(extra=_PLANNER_EXTRA),
+}
+
+SYSTEM_PROMPT = SYSTEM_PROMPTS["default"]
 
 
 def build_user_prompt(
-    observation: Dict[str, Any],
-    actions: List[str],
-    history: List[Dict[str, Any]],
+    observation: dict[str, Any],
+    actions: list[str],
+    history: list[dict[str, Any]],
+    notes: list[str] | None = None,
+    window: int = 8,
 ) -> str:
-    last_steps = history[-6:]
-    history_summary = [
-        {
-            "step": s["step"],
-            "action": s["action"],
-            "reward": s["reward"],
-            "info": s.get("info", {}),
-        }
-        for s in last_steps
+    """
+    Build the user prompt from the current observation, action space, recent
+    history, and the agent's own notes.
+    """
+    recent = []
+    for step in history[-window:]:
+        info = step["info"]
+        recent.append({
+            "step": step["step"],
+            "from": step["position"],
+            "action": step["action"],
+            "to": step["position_after"],
+            "result": info.get("message") or info.get("error") or info.get("description", ""),
+        })
+
+    position = observation["agent_position"]
+    visits = sum(1 for step in history if step["position"] == position)
+
+    sections = [
+        f"Observation (JSON):\n{json.dumps(observation, indent=2)}",
+        f"Available actions:\n{json.dumps(actions)}",
+        f"Recent history (last {len(recent)} of {len(history)} steps):\n"
+        f"{json.dumps(recent, indent=2)}",
     ]
+    if visits:
+        sections.append(
+            f"You have been at position {position} {visits} time(s) before. "
+            "If you are going in circles, try a different route."
+        )
+    if notes:
+        sections.append("Your notes so far:\n" + "\n".join(f"- {n}" for n in notes))
+    sections.append(f"Goal:\n{observation.get('goal')}")
 
-    prompt = f"""
-Current observation:
-{json.dumps(observation, indent=2)}
-
-Allowed actions:
-{json.dumps(actions)}
-
-Recent history (last {len(history_summary)} steps):
-{json.dumps(history_summary, indent=2)}
-
-Choose the single best next action. If you want to remember something, use WRITE_NOTE and put the text in the "note" field.
-""".strip()
-
-    return prompt
+    return "\n\n".join(sections)

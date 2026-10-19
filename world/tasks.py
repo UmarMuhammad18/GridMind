@@ -1,58 +1,40 @@
-from typing import Any, Dict, List
+from dataclasses import dataclass
+
+from world.levels import list_levels, load_level
+from world.solver import find_cell, solve
+
+DEFAULT_GOAL = "Find the key, then go to the door, open it, and reach the goal tile behind it."
 
 
-# Each task defines a name, goal text, max steps, and an optional custom grid.
-# If no grid is provided, the default layout from GridWorld is used.
-
-KEY_DOOR_TASK: Dict[str, Any] = {
-    "name": "key_door",
-    "goal": "Find the key, open the locked door, and reach the goal tile behind it.",
-    "max_steps": 40,
-}
-
-# Slightly larger / different layout
-MAZE_TASK: Dict[str, Any] = {
-    "name": "maze",
-    "goal": "Navigate the maze, pick up the key, open the door, and reach the goal.",
-    "max_steps": 60,
-    "grid": [
-        list("##########"),
-        list("#A.......#"),
-        list("#.##.###.#"),
-        list("#.#...#K.#"),
-        list("#.###.#..#"),
-        list("#....D..G#"),
-        list("##########"),
-    ],
-}
-
-# Key is farther, door is closer to start (tests planning)
-LONG_KEY_TASK: Dict[str, Any] = {
-    "name": "long_key",
-    "goal": "The key is far away. Retrieve it, return to open the door, then reach the goal.",
-    "max_steps": 80,
-    "grid": [
-        list("############"),
-        list("#A..D.G....#"),
-        list("#.########.#"),
-        list("#..........#"),
-        list("#.########.#"),
-        list("#.........K#"),
-        list("############"),
-    ],
-}
-
-ALL_TASKS: Dict[str, Dict[str, Any]] = {
-    "key_door": KEY_DOOR_TASK,
-    "maze": MAZE_TASK,
-    "long_key": LONG_KEY_TASK,
-}
+@dataclass(frozen=True)
+class Task:
+    name: str
+    grid: tuple[str, ...]
+    goal: str = DEFAULT_GOAL
+    max_steps: int = 40
+    optimal_steps: int | None = None
 
 
-def get_task(name: str = "key_door") -> Dict[str, Any]:
-    """Return a task by name. Falls back to key_door."""
-    return ALL_TASKS.get(name, KEY_DOOR_TASK).copy()
+def make_task(level: str = "key_door", seed: int | None = None,
+              max_steps: int | None = None) -> Task:
+    """
+    Build a task from a level. Unless given, the step limit is generous:
+    at least 40 steps, or three times the optimal solution length.
+    """
+    grid = load_level(level, seed)
+    start = find_cell(grid, "A")
+    plan = solve([row.replace("A", ".") for row in grid], start)
+    optimal = len(plan) if plan is not None else None
+
+    if max_steps is None:
+        max_steps = max(40, 3 * optimal) if optimal else 40
+
+    name = f"random-{seed}" if level == "random" else level
+    return Task(name=name, grid=tuple(grid), max_steps=max_steps, optimal_steps=optimal)
 
 
-def list_tasks() -> List[str]:
-    return list(ALL_TASKS.keys())
+def list_tasks() -> list[str]:
+    return [*list_levels(), "random"]
+
+
+KEY_DOOR_TASK = make_task("key_door")

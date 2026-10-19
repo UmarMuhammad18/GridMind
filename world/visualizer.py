@@ -6,8 +6,6 @@ Falls back gracefully if pygame is not installed.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
-
 try:
     import pygame
     PYGAME_AVAILABLE = True
@@ -33,13 +31,13 @@ COLORS = {
 class Visualizer:
     def __init__(self, title: str = "GridMind"):
         if not PYGAME_AVAILABLE:
-            raise RuntimeError("pygame is not installed. Run: pip install pygame")
+            raise RuntimeError("pygame is not installed. Run: pip install pygame-ce")
 
         pygame.init()
         pygame.display.set_caption(title)
         self.font = pygame.font.SysFont("Consolas", 16)
         self.small_font = pygame.font.SysFont("Consolas", 13)
-        self.screen: Optional[pygame.Surface] = None
+        self.screen: pygame.Surface | None = None
         self.clock = pygame.time.Clock()
 
     def _ensure_screen(self, cols: int, rows: int):
@@ -50,11 +48,11 @@ class Visualizer:
 
     def draw(
         self,
-        grid: List[List[str]],
-        agent_pos: Tuple[int, int],
+        grid: list[list[str]],
+        agent_pos: tuple[int, int],
         inventory: dict,
         door_open: bool,
-        notes: List[str],
+        notes: list[str],
         step: int,
         max_steps: int,
         status: str = "",
@@ -79,7 +77,8 @@ class Visualizer:
 
                 # Draw letter for key objects
                 if cell in ("K", "D", "G", "A", "?"):
-                    label = self.font.render(cell, True, (0, 0, 0) if cell != "?" else (100, 100, 110))
+                    text_color = (0, 0, 0) if cell != "?" else (100, 100, 110)
+                    label = self.font.render(cell, True, text_color)
                     lr = label.get_rect(center=rect.center)
                     self.screen.blit(label, lr)
 

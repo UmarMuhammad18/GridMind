@@ -1,4 +1,10 @@
 {
   "provider": "openai",
-  "model": "gpt-4o-mini"
+  "model": "gpt-4o-mini",
+  "temperature": 0.2,
+  "prompt": "default",
+  "max_retries": 2,
+  "api_retries": 3,
+  "history_window": 8,
+  "pricing": { "input_per_mtok": 0.15, "output_per_mtok": 0.6 }
 }

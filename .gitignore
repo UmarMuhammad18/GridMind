@@ -4,3 +4,5 @@ __pycache__/
 config.json
 logs/
 *.log
+.pytest_cache/
+.ruff_cache/

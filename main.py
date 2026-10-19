@@ -1,180 +1,99 @@
-#!/usr/bin/env python3
-"""
-GridMind — run an LLM agent inside a 2D grid world.
-"""
+"""Run a single GridMind episode."""
 
 import argparse
-import json
-import os
-import time
-from datetime import datetime, timezone
+import sys
 
-from dotenv import load_dotenv
-
-from agent.llm_agent import LLMAgent
+from agent.factory import AGENT_KINDS, make_agent
+from agent.llm_clients import PROVIDER_DEFAULTS, LLMError
+from agent.prompt_templates import SYSTEM_PROMPTS
+from config import load_config
+from runner import run_episode
 from world.grid_world import GridWorld
-from world.tasks import get_task, list_tasks
+from world.levels import LevelError, list_levels
+from world.tasks import list_tasks, make_task
 
 
-def run_episode(
-    task_name: str = "key_door",
-    max_steps: int | None = None,
-    provider: str | None = None,
-    model: str | None = None,
-    partial: bool = False,
-    view_radius: int = 2,
-    visual: bool = False,
-    log_dir: str = "logs",
-) -> dict:
-    load_dotenv()
+def add_llm_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", default="config.json", help="Path to a config file.")
+    parser.add_argument("--provider", choices=list(PROVIDER_DEFAULTS))
+    parser.add_argument("--model", help="Model name for the chosen provider.")
 
-    os.makedirs(log_dir, exist_ok=True)
 
-    task = get_task(task_name)
-    if max_steps is not None:
-        task["max_steps"] = max_steps
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--agent", choices=AGENT_KINDS, default="llm")
+    parser.add_argument("--level", "--task", dest="level", default="key_door",
+                        help=f"One of {', '.join(list_levels())}, 'random', or a .txt path.")
+    parser.add_argument("--list-tasks", "--list-levels", action="store_true",
+                        help="List the bundled levels and exit.")
+    parser.add_argument("--seed", type=int, help="Seed for random levels and the random agent.")
+    parser.add_argument("--max-steps", type=int, help="Override the task's step limit.")
+    parser.add_argument("--prompt", choices=list(SYSTEM_PROMPTS))
+    parser.add_argument("--log-dir", default="logs")
+    parser.add_argument("--quiet", action="store_true", help="Only print the final result.")
+    parser.add_argument("--visual", action="store_true", help="Show a Pygame window.")
+    add_env_arguments(parser)
+    add_llm_arguments(parser)
+    return parser.parse_args(argv)
 
-    env = GridWorld(partial_observability=partial, view_radius=view_radius)
-    agent = LLMAgent(provider=provider, model=model)
+
+def add_env_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--partial", action="store_true",
+                        help="Enable fog of war (partial observability).")
+    parser.add_argument("--view-radius", type=int, default=2,
+                        help="How far the agent can see with --partial.")
+
+
+def open_visualizer(title: str):
+    try:
+        from world.visualizer import Visualizer
+
+        return Visualizer(title=title)
+    except Exception as exc:  # pygame missing or no display available
+        print(f"[warn] Could not start visualizer: {exc}. Falling back to terminal only.",
+              file=sys.stderr)
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.list_tasks:
+        for name in list_tasks():
+            print(name)
+        return 0
+
+    config = load_config(args.config, {
+        "provider": args.provider, "model": args.model, "prompt": args.prompt,
+    })
 
     viz = None
-    if visual:
-        try:
-            from world.visualizer import Visualizer
-            viz = Visualizer(title=f"GridMind — {task['name']}")
-        except Exception as e:
-            print(f"[warn] Could not start visualizer: {e}")
-            print("        Falling back to terminal only.")
-
-    observation = env.reset(task)
-    history = []
-
-    print(f"\n=== GridMind | task={task['name']} | provider={agent.provider.__class__.__name__} | model={agent.model} ===")
-    if partial:
-        print(f"Partial observability ON (radius={view_radius})")
-    print(f"Goal: {task['goal']}\n")
-
-    for step in range(task["max_steps"]):
-        print(f"\n=== STEP {step} ===")
-        env.render(use_color=True)
-
+    try:
+        task = make_task(args.level, seed=args.seed, max_steps=args.max_steps)
+        agent = make_agent(args.agent, config, seed=args.seed)
+        env = GridWorld(task, partial_observability=args.partial, view_radius=args.view_radius)
+        if args.visual:
+            viz = open_visualizer(f"GridMind - {task.name}")
+        result = run_episode(env, agent, seed=args.seed,
+                             pricing=config.get("pricing"), verbose=not args.quiet,
+                             log_dir=args.log_dir, visualizer=viz)
+    except (LevelError, LLMError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    finally:
         if viz:
-            grid_for_viz = env._visible_grid() if env.partial_observability else [row[:] for row in env.grid]
-            alive = viz.draw(
-                grid=grid_for_viz,
-                agent_pos=env.agent_pos,
-                inventory=env.inventory,
-                door_open=env.door_open,
-                notes=env.notes,
-                step=env.step_count,
-                max_steps=env.max_steps,
-            )
-            if not alive:
-                print("Visualizer window closed.")
-                break
+            viz.close()
 
-        action, explanation, note = agent.choose_action(
-            observation=observation,
-            actions=env.action_space,
-            history=history,
-        )
-
-        print(f"Action     : {action}")
-        if explanation:
-            print(f"Reasoning  : {explanation}")
-        if note:
-            print(f"Note       : {note}")
-
-        new_obs, reward, done, info = env.step(action, note_text=note)
-
-        record = {
-            "step": step,
-            "action": action,
-            "explanation": explanation,
-            "note": note,
-            "reward": reward,
-            "done": done,
-            "info": info,
-            "observation": observation,
-        }
-        history.append(record)
-        observation = new_obs
-
-        if done:
-            print("\n--- Episode finished ---")
-            env.render(use_color=True)
-            if viz:
-                grid_for_viz = env._visible_grid() if env.partial_observability else [row[:] for row in env.grid]
-                viz.draw(
-                    grid=grid_for_viz,
-                    agent_pos=env.agent_pos,
-                    inventory=env.inventory,
-                    door_open=env.door_open,
-                    notes=env.notes,
-                    step=env.step_count,
-                    max_steps=env.max_steps,
-                    status=str(info.get("message", "")),
-                )
-                time.sleep(1.5)
-            print(f"Result: {info}")
-            break
-
-    if viz:
-        viz.close()
-
-    # Persist logs
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    json_path = os.path.join(log_dir, f"run_{task_name}_{ts}.json")
-    txt_path = os.path.join(log_dir, f"run_{task_name}_{ts}.txt")
-
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
-
-    with open(txt_path, "w", encoding="utf-8") as f:
-        for s in history:
-            f.write(f"STEP {s['step']}\n")
-            f.write(f"Action: {s['action']}\n")
-            f.write(f"Explanation: {s['explanation']}\n")
-            if s.get("note"):
-                f.write(f"Note: {s['note']}\n")
-            f.write(f"Reward: {s['reward']}\n")
-            f.write(f"Info: {s['info']}\n\n")
-
-    print(f"\nLogs saved:\n  {json_path}\n  {txt_path}")
-
-    success = any(h.get("info", {}).get("success") for h in history)
-    return {"success": success, "steps": len(history), "history": history}
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="GridMind LLM Agent")
-    parser.add_argument("--task", default="key_door", choices=list_tasks())
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--provider", choices=["openai", "groq"], default=None)
-    parser.add_argument("--model", default=None)
-    parser.add_argument("--partial", action="store_true", help="Enable fog-of-war")
-    parser.add_argument("--view-radius", type=int, default=2)
-    parser.add_argument("--visual", action="store_true", help="Open Pygame window")
-    parser.add_argument("--list-tasks", action="store_true")
-    args = parser.parse_args()
-
-    if args.list_tasks:
-        print("Available tasks:")
-        for name in list_tasks():
-            t = get_task(name)
-            print(f"  {name:12}  {t['goal'][:70]}...")
-        return
-
-    run_episode(
-        task_name=args.task,
-        max_steps=args.max_steps,
-        provider=args.provider,
-        model=args.model,
-        partial=args.partial,
-        view_radius=args.view_radius,
-        visual=args.visual,
-    )
+    outcome = "SUCCESS" if result.success else "FAILED"
+    line = f"\n{outcome}: {result.agent} on {result.level} in {result.steps} steps"
+    if result.optimal_steps:
+        line += f" (optimal {result.optimal_steps})"
+    if result.llm_calls:
+        line += f", {result.input_tokens + result.output_tokens} tokens"
+    if result.cost is not None:
+        line += f", ${result.cost:.4f}"
+    print(line)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
