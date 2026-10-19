@@ -4,22 +4,25 @@
 
 Built by **Umar Muhammad**
 
-GridMind is a lightweight, fully observable 2D grid-world environment designed to explore how Large Language Models can operate as autonomous agents.
+GridMind is a lightweight, fully observable 2D grid-world environment and benchmark for exploring how Large Language Models operate as autonomous agents.
 
-The project places an LLM inside a virtual environment where it must perceive the world, reason about its current state, and choose actions to achieve a goal. Inspired by concepts from reinforcement learning, robotics, and agent-based systems, GridMind provides a clean agent-environment harness for experimenting with autonomous decision-making.
+The project places an LLM inside a virtual environment where it must perceive the world, reason about its current state, and choose actions to achieve a goal. Inspired by concepts from reinforcement learning, robotics, and agent-based systems, GridMind provides a clean agent-environment harness for experimenting with autonomous decision-making, and an evaluation suite for comparing models and prompts against fixed baselines.
 
 ---
 
 ## Features
 
-* Fully observable 2D grid world
+* Fully observable 2D grid world with a Gymnasium-style API
 * Interactive objects (keys, locked doors, goals)
-* Structured JSON observations
-* Goal-driven task system
-* LLM-powered reasoning loop
-* Step-by-step decision logging
-* Modular architecture with clear separation of concerns
-* Strict action schema for reliable execution
+* Levels loaded from text files, plus seeded random level generation
+* Every level is checked for solvability, and the goal can only be reached through the door
+* Pluggable LLM providers: OpenAI, Anthropic (Claude), and local models via Ollama
+* Enforced JSON output, automatic re-asking on invalid replies, and API retries
+* Agent memory: recent moves with positions, loop detection, and self-written notes
+* Baseline agents: random (lower bound) and BFS-optimal (upper bound)
+* Evaluation script reporting success rate, efficiency, invalid actions, tokens and cost
+* Episode logs with a terminal replay viewer
+* Test suite and CI
 
 ---
 
@@ -36,15 +39,15 @@ The agent is placed inside a virtual environment containing:
 At every step:
 
 1. The environment generates an observation.
-2. The observation is sent to the LLM.
-3. The LLM reasons about the current state.
-4. The LLM returns a valid action.
+2. The observation is sent to the agent (an LLM or a baseline).
+3. The agent reasons about the current state.
+4. The agent returns a valid action.
 5. The environment executes the action.
-6. The process repeats until the task is completed or the step limit is reached.
+6. The process repeats until the goal is reached or the step limit runs out.
 
 Example objective:
 
-> Find the key, unlock the door, and reach the goal tile.
+> Find the key, then go to the door, open it, and reach the goal tile behind it.
 
 ---
 
@@ -56,142 +59,96 @@ Example objective:
 +-----------------------------------------------------------+
 
 +-------------------+        +------------------------------+
-|   GridWorld Env   | <----> |         LLM Agent            |
-|  - Grid state     |        |  - Receives observations     |
-|  - Rules & logic  |        |  - Performs reasoning        |
+|   GridWorld Env   | <----> |            Agent             |
+|  - Grid state     |        |  - LLMAgent (any provider)   |
+|  - Rules & logic  |        |  - RandomAgent / BFSAgent    |
 |  - Rewards        |        |  - Returns next action       |
 +-------------------+        +------------------------------+
-
           ^                                |
           |                                v
-
 +-------------------+        +------------------------------+
-|    Task Module    |        |        Control Loop          |
-|  - Goal text      |        |  - Runs episodes            |
-|  - Step limits    |        |  - Logs decisions           |
+|  Levels & Tasks   |        |     Runner / Evaluation      |
+|  - Text levels    |        |  - Runs episodes             |
+|  - Random levels  |        |  - Logs & metrics            |
+|  - BFS solver     |        |  - Replay                    |
 +-------------------+        +------------------------------+
 ```
 
 The architecture intentionally maintains a clean boundary between:
 
-* Environment simulation
-* Agent reasoning
-* Task definition
-* Episode orchestration
-
-This mirrors patterns commonly found in reinforcement learning and robotics systems.
+* Environment simulation (`world/`)
+* Agent reasoning (`agent/`)
+* Level and task definition (`levels/`, `world/levels.py`, `world/tasks.py`)
+* Episode orchestration and evaluation (`runner.py`, `main.py`, `evaluate.py`)
 
 ---
 
 ## Observation Format
 
-The agent receives structured JSON observations containing:
+The agent receives structured JSON observations:
 
 ```json
 {
-  "position": [1, 2],
-  "inventory": {
-    "has_key": false
-  },
-  "goal": "Find the key, unlock the door, and reach the goal.",
-  "step": 3,
+  "agent_position": [1, 1],
+  "standing_on": ".",
   "grid": [
-    ["#", "#", "#"],
-    ["#", "A", "."],
-    ["#", "K", "G"]
-  ]
+    "########",
+    "#A..K..#",
+    "#......#",
+    "###D####",
+    "#....G.#",
+    "########"
+  ],
+  "inventory": { "has_key": false },
+  "goal": "Find the key, then go to the door, open it, and reach the goal tile behind it.",
+  "step": 0,
+  "max_steps": 40
 }
 ```
 
-Providing structured observations makes the agent's reasoning process transparent, deterministic, and easy to debug.
+Coordinates are `[x, y]`: `x` is the column, `y` is the row, and `y` grows downward. `standing_on` reports the tile under the agent, since `A` hides it on the grid.
 
 ---
 
 ## Action Space
-
-GridMind uses a constrained action space to keep agent behavior predictable and machine-readable.
-
-Supported actions:
 
 ```text
 MOVE_UP
 MOVE_DOWN
 MOVE_LEFT
 MOVE_RIGHT
-PICK_UP_KEY
+PICK_UP
 OPEN_DOOR
-DESCRIBE
+DESCRIBE_ENV
 ```
 
-The agent must always return a valid JSON response:
+* `PICK_UP` works while standing on the key.
+* `OPEN_DOOR` works while holding the key and standing next to the door (not diagonally).
+* `DESCRIBE_ENV` returns a text description of the neighbouring tiles.
+
+The LLM must reply with a JSON object:
 
 ```json
 {
   "action": "MOVE_RIGHT",
-  "explanation": "Moving toward the key."
+  "explanation": "Moving toward the key.",
+  "note": "Key at [4, 1]."
 }
 ```
 
-This prevents ambiguous outputs and ensures reliable environment execution.
+`note` is optional memory: notes are carried into later prompts. Invalid replies are sent back to the model with the error, and if it still fails the agent falls back to `DESCRIBE_ENV`. Each fallback counts as an invalid action in the metrics.
 
----
+### Rewards
 
-## Example Episode
-
-```text
-=== STEP 0 ===
-
-########
-#A..K..#
-#..##..#
-#..D.G.#
-########
-
-Inventory: { has_key: false }
-
-Goal:
-Find the key, then open the door and reach the goal tile.
-
-Agent Action:
-MOVE_RIGHT
-
-Reasoning:
-Moving toward the key is the next logical step.
-```
-
-Full example runs can be found in:
-
-```text
-examples/sample_run.md
-```
-
----
-
-## Project Structure
-
-```text
-GridMind/
-│
-├── main.py
-├── requirements.txt
-├── config.example.json
-├── .gitignore
-│
-├── agent/
-│   ├── llm_agent.py
-│   ├── prompt_templates.py
-│   └── __init__.py
-│
-├── world/
-│   ├── grid_world.py
-│   ├── tasks.py
-│   └── __init__.py
-│
-├── logs/
-│
-└── examples/
-    └── sample_run.md
-```
+| Event                       | Reward |
+| --------------------------- | ------ |
+| Move                        | -0.01  |
+| Bump into wall / closed door, failed `OPEN_DOOR` | -0.1 |
+| Failed `PICK_UP`            | -0.05  |
+| Invalid action              | -0.1   |
+| Pick up key                 | +1.0   |
+| Open door                   | +2.0   |
+| Reach goal                  | +5.0   |
 
 ---
 
@@ -204,47 +161,165 @@ git clone https://github.com/UmarMuhammad18/GridMind.git
 cd GridMind
 ```
 
-Install dependencies:
+Install dependencies (Python 3.10+):
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt          # or requirements-dev.txt for tests and linting
 ```
 
-Configure your API key:
+Add your API key to a `.env` file (see `.env.example`):
 
 ```bash
-export OPENAI_API_KEY="your_api_key"
+OPENAI_API_KEY=your_api_key
+# or
+ANTHROPIC_API_KEY=your_api_key
 ```
 
-Or create a configuration file based on:
+Optionally copy `config.example.json` to `config.json` to set the provider, model, prompt, retries and pricing. Settings are applied in this order, later ones winning:
 
 ```text
-config.example.json
+defaults < config.json < environment (.env) < command-line flags
 ```
+
+| Provider    | Default model     | Notes                                                         |
+| ----------- | ----------------- | ------------------------------------------------------------- |
+| `openai`    | `gpt-4o-mini`     | JSON mode enforced                                            |
+| `anthropic` | `claude-opus-5-5` | JSON schema enforced, `effort` set to `low` (configurable)    |
+| `ollama`    | `llama3.1`        | Local, via `http://localhost:11434/v1`; no API key needed     |
+
+Costs are only reported when `pricing` (dollars per million input and output tokens) is set in `config.json`. Check your provider's current prices.
 
 ---
 
 ## Running GridMind
 
-Start an episode:
+Run one episode:
 
 ```bash
-python main.py
+python main.py                                         # LLM agent on the default level
+python main.py --provider anthropic                    # use Claude
+python main.py --level maze --prompt planner           # different level and prompt
+python main.py --level random --seed 42                # generated level
+python main.py --agent bfs                             # optimal baseline, no API key needed
+python main.py --level path/to/my_level.txt            # your own level
 ```
 
-The agent will:
+Each run writes a JSON and text log to `logs/`. Replay a run in the terminal:
 
-* Observe the environment
-* Reason about the current state
-* Select actions
-* Interact with objects
-* Attempt to complete the task
+```bash
+python replay.py logs/run_<timestamp>_<agent>_<level>.json
+python replay.py logs/run_<...>.json --step            # press Enter to advance
+```
 
-Logs are automatically saved to:
+---
+
+## Evaluation
+
+`evaluate.py` runs several episodes per agent and level and prints a comparison table:
+
+```bash
+python evaluate.py --agents bfs random --levels key_door maze random --episodes 10
+python evaluate.py --agents llm bfs --levels key_door two_rooms --episodes 5
+python evaluate.py --agents llm --models openai:gpt-4o-mini anthropic:claude-opus-5-5
+python evaluate.py --agents llm --prompts default planner
+```
 
 ```text
-logs/
+Agent   Level     N  Success  Avg steps  Efficiency  Invalid  Reward  Tokens  Cost
+------  --------  -  -------  ---------  ----------  -------  ------  ------  ----
+bfs     key_door  5  100%     11.0       100%        0%       7.91    0       -
+bfs     maze      5  100%     23.0       100%        0%       7.79    0       -
+bfs     random    5  100%     14.4       100%        0%       7.88    0       -
+random  key_door  5  0%       -          -           0%       -1.31   0       -
+random  maze      5  0%       -          -           0%       -3.39   0       -
+random  random    5  0%       -          -           0%       -1.38   0       -
 ```
+
+* **Success**: share of episodes that reached the goal.
+* **Avg steps**: mean steps over successful episodes.
+* **Efficiency**: optimal steps ÷ steps taken, averaged over successes (100% = as good as BFS).
+* **Invalid**: share of steps where the agent produced no usable action.
+
+Episode `i` uses seed `--seed + i`, so random levels are reproducible. A full summary is saved to `logs/eval_<timestamp>.json`; add `--save-logs` to keep every episode's log for replay.
+
+---
+
+## Levels
+
+Levels are plain text files in `levels/`:
+
+```text
+########
+#A..K..#
+#......#
+###D####
+#....G.#
+########
+```
+
+| Symbol | Meaning     |
+| ------ | ----------- |
+| `#`    | Wall        |
+| `.`    | Empty       |
+| `A`    | Agent start |
+| `K`    | Key         |
+| `D`    | Locked door |
+| `G`    | Goal        |
+
+A level must be rectangular, surrounded by walls, have exactly one `A` and one `G`, at most one `K` and one `D`, and be solvable. These rules are checked on load. The step limit is 40 or three times the optimal path length, whichever is larger.
+
+Bundled levels: `key_door` (default), `two_rooms`, `maze`. Use `random` for a generated two-room level.
+
+---
+
+## Project Structure
+
+```text
+GridMind/
+│
+├── main.py                 # Run one episode
+├── evaluate.py             # Benchmark agents/models/prompts
+├── replay.py               # Replay a saved episode
+├── runner.py               # Episode loop, metrics and logging
+├── config.py               # Config loading (file, .env, CLI)
+├── config.example.json
+├── .env.example
+├── pyproject.toml
+├── requirements.txt
+├── requirements-dev.txt
+│
+├── agent/
+│   ├── base.py             # Agent protocol, Decision, Usage
+│   ├── llm_agent.py        # LLM agent: prompting, parsing, retries, notes
+│   ├── llm_clients.py      # OpenAI / Anthropic / Ollama clients
+│   ├── prompt_templates.py # System prompts and user prompt builder
+│   ├── baselines.py        # RandomAgent, BFSAgent
+│   └── factory.py
+│
+├── world/
+│   ├── grid_world.py       # The environment
+│   ├── levels.py           # Level loading, validation, generation
+│   ├── solver.py           # BFS solver
+│   └── tasks.py
+│
+├── levels/                 # Level files
+├── tests/                  # pytest suite
+├── examples/
+│   └── sample_run.md
+└── logs/                   # Episode logs (git-ignored)
+```
+
+---
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+ruff check .
+```
+
+The tests use the baselines and a fake LLM client, so they need no API key. CI runs lint and tests on every push and pull request.
 
 ---
 
@@ -260,13 +335,17 @@ Restricting actions keeps the agent grounded and prevents invalid outputs.
 
 ### Strict JSON Interface
 
-Every action must conform to a predefined schema, ensuring reliable communication between the agent and the environment.
+Every action must conform to a predefined schema, which is enforced by the provider where possible and validated by the agent.
+
+### Baselines Before Claims
+
+Every LLM result is reported next to a random agent and an optimal BFS agent, so success rates and efficiency can be read in context.
 
 ### Separation of Concerns
 
 * `world/` handles simulation and environment logic
 * `agent/` handles reasoning and decision-making
-* `main.py` orchestrates execution
+* `runner.py`, `main.py` and `evaluate.py` orchestrate execution
 
 This modular design makes it easy to swap environments, prompts, models, or tasks.
 
@@ -275,26 +354,23 @@ This modular design makes it easy to swap environments, prompts, models, or task
 ## Future Improvements
 
 * Partial observability (fog of war)
-* Memory-augmented agents
-* Multi-room environments
-* Dynamic task generation
+* Multi-room environments with several keys and doors
 * Additional object types and interactions
 * Multi-agent simulations
-* Web-based visualizer
-* Pygame renderer
+* Web-based or Pygame replay viewer
 * Reinforcement learning integrations
 
 ---
 
 ## Tech Stack
 
-| Component     | Technology              |
-| ------------- | ----------------------- |
-| Language      | Python                  |
-| LLM Interface | OpenAI API              |
-| Configuration | JSON                    |
-| Logging       | Python Standard Library |
-| Environment   | Custom Grid World       |
+| Component     | Technology                           |
+| ------------- | ------------------------------------ |
+| Language      | Python 3.10+                         |
+| LLM Interface | OpenAI, Anthropic, Ollama            |
+| Configuration | JSON + `.env`                        |
+| Testing       | pytest, ruff, GitHub Actions         |
+| Environment   | Custom grid world (Gymnasium-style)  |
 
 ---
 

@@ -1,83 +1,105 @@
 import json
-import os
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-from openai import OpenAI
+from agent.base import Decision, Usage
+from agent.llm_clients import LLMClient
+from agent.prompt_templates import SYSTEM_PROMPTS, build_user_prompt
 
-from agent.prompt_templates import SYSTEM_PROMPT, build_user_prompt
+FALLBACK_ACTION = "DESCRIBE_ENV"
+
+
+class ResponseError(ValueError):
+    pass
 
 
 class LLMAgent:
     """
-    Simple LLM-based agent that:
-    - Receives an observation and action space
-    - Builds a prompt
-    - Calls an LLM
-    - Parses a JSON response with { "action": ..., "explanation": ... }
+    LLM-based agent that:
+    - Builds a prompt from the observation, recent history and its own notes
+    - Calls an LLM through a provider-neutral client
+    - Parses a JSON response with { "action", "explanation", "note" }
+    - Re-asks the model when the reply is invalid, then falls back to a safe action
     """
 
-    def __init__(self, model: str | None = None) -> None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY environment variable is not set. "
-                "Set it before running the agent."
-            )
-
-        self.client = OpenAI(api_key=api_key)
-        self.model = model or "gpt-4o-mini"
-
-    def choose_action(
+    def __init__(
         self,
-        observation: Dict[str, Any],
-        actions: List[str],
-        history: List[Dict[str, Any]],
-    ) -> Tuple[str, str]:
-        user_prompt = build_user_prompt(observation, actions, history)
+        client: LLMClient,
+        prompt: str = "default",
+        max_retries: int = 2,
+        history_window: int = 8,
+        max_notes: int = 10,
+    ) -> None:
+        if prompt not in SYSTEM_PROMPTS:
+            raise ValueError(f"Unknown prompt '{prompt}'. Choose from: {', '.join(SYSTEM_PROMPTS)}")
+        self.client = client
+        self.prompt = prompt
+        self.system_prompt = SYSTEM_PROMPTS[prompt]
+        self.max_retries = max_retries
+        self.history_window = history_window
+        self.max_notes = max_notes
+        self.name = f"llm[{client.name}|{prompt}]"
+        self.reset()
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
+    def reset(self) -> None:
+        self.notes: list[str] = []
+        self.usage = Usage()
+
+    def act(
+        self,
+        observation: dict[str, Any],
+        actions: list[str],
+        history: list[dict[str, Any]],
+    ) -> Decision:
+        user_prompt = build_user_prompt(
+            observation, actions, history, self.notes, self.history_window
         )
 
-        content = response.choices[0].message.content
-        action, explanation = self._parse_response(content, actions)
-        return action, explanation
+        prompt = user_prompt
+        error = ""
+        for _ in range(self.max_retries + 1):
+            response = self.client.complete(self.system_prompt, prompt)
+            self.usage.calls += 1
+            self.usage.input_tokens += response.input_tokens
+            self.usage.output_tokens += response.output_tokens
 
-    def _parse_response(
-        self, content: str, actions: List[str]
-    ) -> Tuple[str, str]:
-        """
-        Try to parse the model's response as JSON and extract the action.
-        If parsing fails or the action is invalid, fall back to a safe default.
-        """
-        try:
-            data = json.loads(content)
-            action = data.get("action", "").strip()
-            explanation = data.get("explanation", "").strip()
-        except Exception:
-            # Fallback: try to extract an action name by scanning
-            action = self._fallback_extract_action(content, actions)
-            explanation = "Fallback parsing: could not parse JSON response."
+            try:
+                action, explanation, note = parse_response(response.text, actions)
+            except ResponseError as exc:
+                error = str(exc)
+                prompt = (
+                    f"{user_prompt}\n\nYour previous reply was invalid: {error}\n"
+                    "Reply again with only the JSON object."
+                )
+                continue
 
-        if action not in actions:
-            # If invalid, choose a safe default
-            action = "DESCRIBE_ENV"
-            explanation = (
-                explanation
-                + " (Chosen DESCRIBE_ENV as a safe default due to invalid action.)"
-            )
+            if note:
+                self.notes = (self.notes + [note])[-self.max_notes :]
+            return Decision(action, explanation)
 
-        return action, explanation
+        return Decision(
+            FALLBACK_ACTION,
+            f"Chose {FALLBACK_ACTION} as a safe default: {error}",
+            valid=False,
+        )
 
-    @staticmethod
-    def _fallback_extract_action(text: str, actions: List[str]) -> str:
-        upper_text = text.upper()
-        for act in actions:
-            if act in upper_text:
-                return act
-        return "DESCRIBE_ENV"
+
+def parse_response(text: str, actions: list[str]) -> tuple[str, str, str]:
+    """Parse and validate a model reply. Raises ResponseError if unusable."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").removeprefix("json").strip()
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ResponseError(f"response was not valid JSON ({exc.msg}).") from exc
+    if not isinstance(data, dict):
+        raise ResponseError("response must be a JSON object.")
+
+    action = str(data.get("action", "")).strip().upper()
+    if action not in actions:
+        raise ResponseError(f"'{action}' is not one of the allowed actions {actions}.")
+
+    explanation = str(data.get("explanation", "")).strip()
+    note = str(data.get("note") or "").strip()
+    return action, explanation, note

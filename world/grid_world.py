@@ -1,150 +1,159 @@
-from typing import Dict, List, Tuple, Any
+from typing import Any
+
+from world.solver import MOVES
+from world.tasks import Task, make_task
+
+ACTIONS: list[str] = [
+    "MOVE_UP",
+    "MOVE_DOWN",
+    "MOVE_LEFT",
+    "MOVE_RIGHT",
+    "PICK_UP",
+    "OPEN_DOOR",
+    "DESCRIBE_ENV",
+]
+
+CELL_NAMES = {"#": "wall", ".": "empty", "K": "key", "D": "locked door", "G": "goal"}
+
+STEP_COST = -0.01
+BUMP_PENALTY = -0.1
+FAILED_ACTION_PENALTY = -0.05
+INVALID_ACTION_PENALTY = -0.1
+KEY_REWARD = 1.0
+DOOR_REWARD = 2.0
+GOAL_REWARD = 5.0
 
 
 class GridWorld:
     """
-    Simple 2D grid world.
+    2D grid world with a Gymnasium-style API.
 
     Legend:
       '#' = wall
       '.' = empty
-      'A' = agent
+      'A' = agent (only drawn in observations; never stored in the grid)
       'K' = key
       'D' = locked door
       'G' = goal tile behind the door
+
+    Coordinates are (x, y): x is the column, y is the row, and y grows downward.
     """
 
-    def __init__(self) -> None:
-        # Fixed grid layout for simplicity
-        self._base_grid = [
-            list("########"),
-            list("#A..K..#"),
-            list("#..##..#"),
-            list("#..D.G.#"),
-            list("########"),
-        ]
+    def __init__(self, task: Task | None = None) -> None:
+        self.task = task or make_task("key_door")
+        self.action_space: list[str] = list(ACTIONS)
 
-        self.grid: List[List[str]] = []
-        self.agent_pos: Tuple[int, int] = (0, 0)
-        self.inventory: Dict[str, bool] = {"has_key": False}
-        self.goal_description: str = ""
-        self.step_count: int = 0
-        self.max_steps: int = 0
-
-        self.action_space: List[str] = [
-            "MOVE_UP",
-            "MOVE_DOWN",
-            "MOVE_LEFT",
-            "MOVE_RIGHT",
-            "PICK_UP",
-            "OPEN_DOOR",
-            "DESCRIBE_ENV",
-        ]
-
-    def reset(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        self.grid = [row[:] for row in self._base_grid]
-        self.inventory = {"has_key": False}
-        self.goal_description = task.get("goal", "Find the key and open the door.")
-        self.max_steps = task.get("max_steps", 40)
+        self.grid: list[list[str]] = []
+        self.agent_pos: tuple[int, int] = (0, 0)
+        self.inventory: dict[str, bool] = {"has_key": False}
         self.step_count = 0
+        self.done = True
 
-        # Find agent initial position
+    @property
+    def max_steps(self) -> int:
+        return self.task.max_steps
+
+    @property
+    def goal_description(self) -> str:
+        return self.task.goal
+
+    def reset(self, task: Task | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        if task is not None:
+            self.task = task
+
+        self.grid = [list(row) for row in self.task.grid]
+        self.inventory = {"has_key": False}
+        self.step_count = 0
+        self.done = False
+
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if cell == "A":
                     self.agent_pos = (x, y)
+                    row[x] = "."
 
-        return self._build_observation()
+        return self._build_observation(), {"task": self.task.name}
 
-    def step(self, action: str):
+    def step(self, action: str) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        """Returns (observation, reward, terminated, truncated, info)."""
+        if self.done:
+            raise RuntimeError("Episode has ended; call reset() first.")
+
         self.step_count += 1
         reward = 0.0
-        done = False
-        info: Dict[str, Any] = {}
+        info: dict[str, Any] = {}
 
         if action not in self.action_space:
             info["error"] = f"Invalid action: {action}"
-            return self._build_observation(), reward, done, info
+            reward += INVALID_ACTION_PENALTY
 
-        if action.startswith("MOVE_"):
+        elif action in MOVES:
             moved, move_info = self._handle_move(action)
             info.update(move_info)
-            if not moved:
-                reward -= 0.1  # small penalty for bumping into walls
-            else:
-                reward -= 0.01  # small step cost
+            reward += STEP_COST if moved else BUMP_PENALTY
 
         elif action == "PICK_UP":
             picked, pick_info = self._handle_pick_up()
             info.update(pick_info)
-            if picked:
-                reward += 1.0
-            else:
-                reward -= 0.05
+            reward += KEY_REWARD if picked else FAILED_ACTION_PENALTY
 
         elif action == "OPEN_DOOR":
             opened, open_info = self._handle_open_door()
             info.update(open_info)
-            if opened:
-                reward += 2.0
-            else:
-                reward -= 0.1
+            reward += DOOR_REWARD if opened else BUMP_PENALTY
 
         elif action == "DESCRIBE_ENV":
-            # No direct environment change; reward neutral
-            info["description"] = "Agent attempted to describe the environment."
+            info["description"] = self._describe_surroundings()
 
-        # Check success condition: agent on 'G' and door opened
-        x, y = self.agent_pos
-        if self.grid[y][x] == "G":
-            reward += 5.0
-            done = True
+        terminated = self._current_cell() == "G"
+        truncated = not terminated and self.step_count >= self.max_steps
+
+        if terminated:
+            reward += GOAL_REWARD
             info["success"] = True
             info["message"] = "Agent reached the goal tile."
-
-        if self.step_count >= self.max_steps and not done:
-            done = True
+        elif truncated:
             info["success"] = False
             info["message"] = "Max steps reached."
 
-        return self._build_observation(), reward, done, info
+        self.done = terminated or truncated
+        return self._build_observation(), reward, terminated, truncated, info
+
+    def render_text(self) -> str:
+        lines = ["Grid world:", *self._grid_with_agent()]
+        lines.append(f"Inventory: {self.inventory}")
+        lines.append(f"Goal: {self.goal_description}")
+        lines.append(f"Step: {self.step_count}/{self.max_steps}")
+        return "\n".join(lines)
 
     def render(self) -> None:
-        """Prints the grid with the agent position."""
-        display_grid = [row[:] for row in self.grid]
-        ax, ay = self.agent_pos
-        display_grid[ay][ax] = "A"
-
-        print("Grid world:")
-        for row in display_grid:
-            print("".join(row))
-        print(f"Inventory: {self.inventory}")
-        print(f"Goal: {self.goal_description}")
-        print(f"Step: {self.step_count}/{self.max_steps}")
+        print(self.render_text())
 
     # ----------------- Internal helpers ----------------- #
 
-    def _build_observation(self) -> Dict[str, Any]:
+    def _grid_with_agent(self) -> list[str]:
+        display = [row[:] for row in self.grid]
+        ax, ay = self.agent_pos
+        display[ay][ax] = "A"
+        return ["".join(row) for row in display]
+
+    def _build_observation(self) -> dict[str, Any]:
         return {
             "agent_position": list(self.agent_pos),
-            "grid": ["".join(row) for row in self.grid],
+            "standing_on": self._current_cell(),
+            "grid": self._grid_with_agent(),
             "inventory": self.inventory.copy(),
             "goal": self.goal_description,
             "step": self.step_count,
             "max_steps": self.max_steps,
         }
 
-    def _handle_move(self, action: str):
-        dx, dy = 0, 0
-        if action == "MOVE_UP":
-            dy = -1
-        elif action == "MOVE_DOWN":
-            dy = 1
-        elif action == "MOVE_LEFT":
-            dx = -1
-        elif action == "MOVE_RIGHT":
-            dx = 1
+    def _current_cell(self) -> str:
+        x, y = self.agent_pos
+        return self.grid[y][x]
 
+    def _handle_move(self, action: str) -> tuple[bool, dict[str, Any]]:
+        dx, dy = MOVES[action]
         x, y = self.agent_pos
         nx, ny = x + dx, y + dy
 
@@ -157,39 +166,44 @@ class GridWorld:
         if target == "D":
             return False, {"error": "Door is closed. You must open it first."}
 
-        # Move agent
         self.agent_pos = (nx, ny)
         return True, {}
 
-    def _handle_pick_up(self):
+    def _handle_pick_up(self) -> tuple[bool, dict[str, Any]]:
         x, y = self.agent_pos
-        cell = self.grid[y][x]
-        if cell == "K":
+        if self.grid[y][x] == "K":
             self.inventory["has_key"] = True
-            self.grid[y][x] = "."  # remove key from grid
+            self.grid[y][x] = "."
             return True, {"message": "Picked up the key."}
         return False, {"error": "Nothing to pick up here."}
 
-    def _handle_open_door(self):
+    def _handle_open_door(self) -> tuple[bool, dict[str, Any]]:
         if not self.inventory.get("has_key", False):
             return False, {"error": "You do not have the key."}
 
-        # Door is at a fixed position in this simple world
         door_pos = self._find_cell("D")
         if door_pos is None:
-            return False, {"error": "No door found to open."}
+            return False, {"error": "No locked door to open."}
 
         dx = abs(door_pos[0] - self.agent_pos[0])
         dy = abs(door_pos[1] - self.agent_pos[1])
         if dx + dy != 1:
             return False, {"error": "You must stand next to the door to open it."}
 
-        # Open the door: replace 'D' with '.'
         x, y = door_pos
         self.grid[y][x] = "."
         return True, {"message": "Door opened."}
 
-    def _find_cell(self, target: str):
+    def _describe_surroundings(self) -> str:
+        x, y = self.agent_pos
+        parts = [f"You are at ({x}, {y}) standing on {CELL_NAMES[self._current_cell()]}."]
+        for action, (dx, dy) in MOVES.items():
+            nx, ny = x + dx, y + dy
+            cell = self.grid[ny][nx] if self._in_bounds(nx, ny) else "#"
+            parts.append(f"{action.removeprefix('MOVE_').lower()}: {CELL_NAMES[cell]}")
+        return " ".join(parts[:1]) + " Neighbours - " + ", ".join(parts[1:]) + "."
+
+    def _find_cell(self, target: str) -> tuple[int, int] | None:
         for y, row in enumerate(self.grid):
             for x, cell in enumerate(row):
                 if cell == target:
